@@ -24,6 +24,7 @@
 #include <dk_buttons_and_leds.h>
 
 #include "ndef_file_m.h"
+#include "app_config.h"
 
 
 #define NFC_FIELD_LED		DK_LED1
@@ -71,7 +72,6 @@ static void nfc_callback(void *context,
 			 uint32_t flags)
 {
 	ARG_UNUSED(context);
-	ARG_UNUSED(data);
 	ARG_UNUSED(flags);
 
 	switch (event) {
@@ -89,8 +89,21 @@ static void nfc_callback(void *context,
 
 	case NFC_T4T_EVENT_NDEF_UPDATED:
 		if (data_length > 0) {
+			printk("NFC write received, %u bytes:\n", data_length);
+			for (size_t i = 0; i < data_length; i++) {
+				printk("%02x ", data[i]);
+				if ((i + 1) % 16 == 0) {
+					printk("\n");
+				}
+			}
+			if (data_length % 16 != 0) {
+				printk("\n");
+			}
 			dk_set_led_on(NFC_WRITE_LED);
-			flash_buffer_prepare(data_length);
+
+			if (!app_config_handle_ndef(ndef_msg_buf, sizeof(ndef_msg_buf))) {
+				flash_buffer_prepare(data_length);
+			}
 		}
 		break;
 
