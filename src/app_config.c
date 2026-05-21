@@ -220,6 +220,50 @@ static int ndef_encode_info_response(const uint8_t *payload,
 	return 0;
 }
 
+/* ── 帧打印 ── */
+
+static void print_frame(const char *channel, const char *dir,
+			const uint8_t *buf, size_t len)
+{
+	printk("[%s] %s (%u bytes):", channel, dir, (unsigned)len);
+	for (size_t i = 0; i < len; i++) {
+		if (i % 16 == 0) {
+			printk("\n  %02x:", (unsigned)i);
+		}
+		printk(" %02x", buf[i]);
+	}
+	printk("\n");
+}
+
+/* ── 命令参数处理（NFC/BLE共用） ── */
+
+static void apply_write_config(const uint8_t *args, uint32_t args_len,
+				const char *channel)
+{
+	if (args_len < 2) {
+		printk("[%s] CMD 0x02 payload too short\n", channel);
+		return;
+	}
+	uint8_t param_id = args[0];
+	switch (param_id) {
+	case APP_CONFIG_PARAM_MODE:
+		g_mode = args[1];
+		printk("[%s] mode set to 0x%02x\n", channel, g_mode);
+		break;
+	case APP_CONFIG_PARAM_REPORT_INTERVAL:
+		if (args_len < 3) {
+			printk("[%s] interval payload too short\n", channel);
+			break;
+		}
+		g_update_time = ((uint16_t)args[1] << 8) | args[2];
+		printk("[%s] update_time set to %u min\n", channel, g_update_time);
+		break;
+	default:
+		printk("[%s] unknown param_id 0x%02x\n", channel, param_id);
+		break;
+	}
+}
+
 /* ── 公共接口 ── */
 
 bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
@@ -237,37 +281,23 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 		return false;
 	}
 
-	printk("app_config: received cmd 0x%02x\n", cmd);
+	print_frame("NFC", "RX cmd", payload, payload_len);
 
 	/* 处理 CMD 0x02: 写入配置 */
 	if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
 		if (payload_len < 3) {
-			printk("app_config: cmd 0x02 payload too short\n");
+			printk("[NFC] CMD 0x02 payload too short\n");
 			return false;
 		}
-		uint8_t param_id = payload[1];
-		switch (param_id) {
-		case APP_CONFIG_PARAM_MODE:
-			g_mode = payload[2];
-			printk("app_config: mode set to 0x%02x\n", g_mode);
-			break;
-		case APP_CONFIG_PARAM_REPORT_INTERVAL:
-			if (payload_len < 4) {
-				printk("app_config: cmd 0x02 interval payload too short\n");
-				return false;
-			}
-			g_update_time = ((uint16_t)payload[2] << 8) | payload[3];
-			printk("app_config: update_time set to %u min\n", g_update_time);
-			break;
-		default:
-			printk("app_config: unknown param_id 0x%02x\n", param_id);
-			break;
-		}
+		/* payload[0]=CMD, payload[1]=param_id, payload[2..]=value */
+		apply_write_config(&payload[1], payload_len - 1, "NFC");
 	}
 
 	/* 构建应答payload */
 	uint8_t resp[APP_CONFIG_RESPONSE_PAYLOAD_SIZE];
 	response_build(cmd, resp);
+
+	print_frame("NFC", "TX resp", resp, sizeof(resp));
 
 	/* 编码应答NDEF消息 */
 	uint8_t *raw_msg = nfc_t4t_ndef_file_msg_get(ndef_msg_buf);
@@ -275,14 +305,14 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 
 	int err = ndef_encode_info_response(resp, raw_msg, &raw_msg_size);
 	if (err) {
-		printk("app_config: encode error %d\n", err);
+		printk("[NFC] encode error %d\n", err);
 		return false;
 	}
 
 	/* 写入NLEN前缀 */
 	err = nfc_t4t_ndef_file_encode(ndef_msg_buf, &raw_msg_size);
 	if (err) {
-		printk("app_config: file encode error %d\n", err);
+		printk("[NFC] file encode error %d\n", err);
 		return false;
 	}
 
@@ -291,6 +321,33 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 	 * T4T库在下次READ时会自动读取更新后的缓冲区。
 	 */
 
-	printk("app_config: response ready for cmd 0x%02x\n", cmd);
 	return true;
+}
+
+void app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
+{
+	if (len < 1) {
+		return;
+	}
+
+	uint8_t cmd = data[0];
+
+	print_frame("BLE", "RX cmd", data, len);
+
+	if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
+		if (len < 3) {
+			printk("[BLE] CMD 0x02 payload too short\n");
+			resp[0] = cmd;
+			resp[1] = APP_CONFIG_STATUS_BUSY;
+			memset(&resp[2], 0, APP_CONFIG_RESPONSE_PAYLOAD_SIZE - 2);
+			print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
+			return;
+		}
+		/* data[0]=CMD, data[1]=param_id, data[2..]=value */
+		apply_write_config(&data[1], len - 1, "BLE");
+	}
+
+	response_build(cmd, resp);
+
+	print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
 }

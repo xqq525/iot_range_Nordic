@@ -25,6 +25,7 @@
 
 #include "ndef_file_m.h"
 #include "app_config.h"
+#include "ble_uart.h"
 
 
 #define NFC_FIELD_LED		DK_LED1
@@ -80,7 +81,9 @@ static void nfc_callback(void *context,
 		break;
 
 	case NFC_T4T_EVENT_FIELD_OFF:
-		dk_set_leds(DK_NO_LEDS_MSK);
+		dk_set_led_off(NFC_FIELD_LED);
+		dk_set_led_off(NFC_WRITE_LED);
+		dk_set_led_off(NFC_READ_LED);
 		break;
 
 	case NFC_T4T_EVENT_NDEF_READ:
@@ -89,16 +92,6 @@ static void nfc_callback(void *context,
 
 	case NFC_T4T_EVENT_NDEF_UPDATED:
 		if (data_length > 0) {
-			printk("NFC write received, %u bytes:\n", data_length);
-			for (size_t i = 0; i < data_length; i++) {
-				printk("%02x ", data[i]);
-				if ((i + 1) % 16 == 0) {
-					printk("\n");
-				}
-			}
-			if (data_length % 16 != 0) {
-				printk("\n");
-			}
 			dk_set_led_on(NFC_WRITE_LED);
 
 			if (!app_config_handle_ndef(ndef_msg_buf, sizeof(ndef_msg_buf))) {
@@ -115,12 +108,6 @@ static void nfc_callback(void *context,
 static int board_init(void)
 {
 	int err;
-
-	err = dk_buttons_init(NULL);
-	if (err) {
-		printk("Cannot init buttons (err: %d)\n", err);
-		return err;
-	}
 
 	err = dk_leds_init();
 	if (err) {
@@ -182,6 +169,13 @@ int main(void)
 		goto fail;
 	}
 	printk("Starting NFC Writable NDEF Message sample\n");
+
+	/* Initialize BLE UART service */
+	err = ble_uart_init();
+	if (err) {
+		printk("Cannot initialize BLE UART (err: %d)\n", err);
+		goto fail;
+	}
 
 	while (true) {
 		k_sem_take(&nfc_write_sem, K_FOREVER);

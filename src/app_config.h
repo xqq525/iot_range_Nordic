@@ -60,6 +60,21 @@ void app_config_set_update_time(uint16_t interval);
  */
 bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size);
 
+/**
+ * @brief 处理BLE收到的裸命令，构建50字节应答payload。
+ *
+ *        命令格式: [CMD, ...params]
+ *          CMD 0x01: 读设备信息，无参数
+ *          CMD 0x02: 写配置，param_id=0x01 mode, param_id=0x02 interval(2字节BE)
+ *
+ *        应答格式: 50字节，与NFC应答payload完全相同。
+ *
+ * @param data   BLE收到的原始bytes
+ * @param len    数据长度
+ * @param resp   输出缓冲区，须>=APP_CONFIG_RESPONSE_PAYLOAD_SIZE字节
+ */
+void app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp);
+
 #ifdef __cplusplus
 }
 #endif
