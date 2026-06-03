@@ -47,6 +47,59 @@ static const struct bt_data sd[] = {
 	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NUS_VAL),
 };
 
+/* BLE响应发送：等CCCD订阅后再发送 */
+static bool nus_tx_subscribed;
+static bool resp_pending;
+static struct bt_conn *resp_conn;
+static uint8_t resp_buf[APP_CONFIG_RESPONSE_PAYLOAD_SIZE];
+
+static void send_retry_handler(struct k_work *work);
+
+static K_WORK_DELAYABLE_DEFINE(send_retry_work, send_retry_handler);
+
+#define RESP_RETRY_MAX 30
+
+static void send_pending_resp(void)
+{
+	static uint8_t retry_cnt;
+	if (!resp_conn || !resp_pending) {
+		return;
+	}
+
+	int err = bt_nus_send(resp_conn, resp_buf, sizeof(resp_buf));
+	if (err) {
+		retry_cnt++;
+		if (retry_cnt >= RESP_RETRY_MAX) {
+			LOG_ERR("BLE response failed after %d retries: ATT MTU too small (need ≥66). "
+				"APP must request MTU > 66 after connection.", retry_cnt);
+			resp_pending = false;
+			retry_cnt = 0;
+		} else {
+			k_work_schedule(&send_retry_work, K_MSEC(100));
+		}
+	} else {
+		LOG_INF("Response sent successfully");
+		resp_pending = false;
+		retry_cnt = 0;
+	}
+}
+
+static void send_retry_handler(struct k_work *work)
+{
+	send_pending_resp();
+}
+
+static void nus_send_enabled_cb(enum bt_nus_send_status status)
+{
+	nus_tx_subscribed = (status == BT_NUS_SEND_STATUS_ENABLED);
+	LOG_INF("NUS TX notifications %s",
+		nus_tx_subscribed ? "enabled" : "disabled");
+
+	if (nus_tx_subscribed) {
+		send_pending_resp();
+	}
+}
+
 static void adv_work_handler(struct k_work *work)
 {
 	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
@@ -99,6 +152,10 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 		current_conn = NULL;
 		dk_set_led_off(BLE_CON_LED);
 	}
+
+	resp_conn = NULL;
+	resp_pending = false;
+	nus_tx_subscribed = false;
 }
 
 static void recycled_cb(void)
@@ -244,18 +301,21 @@ static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data,
 		return;
 	}
 
-	uint8_t resp[APP_CONFIG_RESPONSE_PAYLOAD_SIZE];
+	app_config_handle_ble(data, len, resp_buf);
+	resp_conn = conn;
+	resp_pending = true;
 
-	app_config_handle_ble(data, len, resp);
+	/* 总是延迟发送，确保 ATT 通知通道完全就绪 */
+	k_work_schedule(&send_retry_work, K_MSEC(500));
 
-	int err = bt_nus_send(conn, resp, sizeof(resp));
-	if (err) {
-		LOG_WRN("Failed to send BLE response (err: %d)", err);
+	if (!nus_tx_subscribed) {
+		LOG_INF("NUS TX not subscribed yet, will retry after subscribe");
 	}
 }
 
 static struct bt_nus_cb nus_cb = {
 	.received = bt_receive_cb,
+	.send_enabled = nus_send_enabled_cb,
 };
 
 int ble_uart_init(void)

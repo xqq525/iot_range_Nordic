@@ -28,6 +28,13 @@ static uint8_t  g_position    = 0x00;  /* 0=正常, 1=倾斜 */
 static uint8_t  g_mode        = 0x02;  /* 1=快递箱, 2=垃圾桶 */
 static uint16_t g_update_time = 0;      /* 上报间隔，单位分钟 */
 
+/* ── GNSS 定位数据 ── */
+
+static uint8_t  g_gnss_fix    = 0x01;
+static int32_t  g_latitude    = 246087800;   /* 24.60878°N × 10^7 */
+static int32_t  g_longitude   = 1180689300;  /* 118.06893°E × 10^7 */
+static int16_t  g_altitude    = 15;           /* 15m */
+
 /* ── 供外部模块更新传感器值 ── */
 
 void app_config_set_battery(uint8_t level)     { g_battery = level; }
@@ -36,6 +43,16 @@ void app_config_set_distance(uint16_t dist)     { g_distance = dist; }
 void app_config_set_position(uint8_t pos)       { g_position = pos; }
 void app_config_set_mode(uint8_t mode)          { g_mode = mode; }
 void app_config_set_update_time(uint16_t interval) { g_update_time = interval; }
+void app_config_set_gnss_fix(uint8_t fix)       { g_gnss_fix = fix; }
+void app_config_set_latitude(int32_t lat)       { g_latitude = lat; }
+void app_config_set_longitude(int32_t lng)      { g_longitude = lng; }
+void app_config_set_altitude(int16_t alt)       { g_altitude = alt; }
+
+/* ── 全局时间戳 ── */
+
+static uint32_t g_unixtime;  /* APP 最后一次 CMD 0x01 携带的时间戳，秒级 */
+
+uint32_t app_config_get_unixtime(void) { return g_unixtime; }
 
 /* ── NDEF记录标志 ── */
 
@@ -59,44 +76,69 @@ static void response_build(uint8_t cmd, uint8_t *resp)
 	case APP_CONFIG_CMD_WRITE_CONFIG: {
 		resp[1] = APP_CONFIG_STATUS_OK;
 
-		/* MODEL: offset 2, 16 bytes */
+		/* DATA_LEN: offset 2, uint16 BE — offset 4起共48字节 */
+		resp[2] = (uint8_t)((APP_CONFIG_RESPONSE_PAYLOAD_SIZE - 4) >> 8);
+		resp[3] = (uint8_t)(APP_CONFIG_RESPONSE_PAYLOAD_SIZE - 4);
+
+		/* DEVICE_TYPE: offset 4 */
+		resp[4] = APP_CONFIG_DEVICE_TYPE;
+
+		/* MODEL: offset 5, 16 bytes */
 		size_t ml = strlen(g_model) + 1;
 		if (ml > 16) ml = 16;
-		memcpy(&resp[2], g_model, ml);
+		memcpy(&resp[5], g_model, ml);
 
-		/* SN: offset 18, 16 bytes */
+		/* SN: offset 21, 16 bytes */
 		size_t sl = strlen(g_sn) + 1;
 		if (sl > 16) sl = 16;
-		memcpy(&resp[18], g_sn, sl);
+		memcpy(&resp[21], g_sn, sl);
 
-		/* FW_VER: offset 34, 3 bytes */
-		memcpy(&resp[34], g_fw_ver, 3);
+		/* FW_VER: offset 37, 3 bytes */
+		memcpy(&resp[37], g_fw_ver, 3);
 
-		/* HW_VER: offset 37, 3 bytes */
-		memcpy(&resp[37], g_hw_ver, 3);
+		/* HW_VER: offset 40, 3 bytes */
+		memcpy(&resp[40], g_hw_ver, 3);
 
-		/* BATTERY: offset 40 */
-		resp[40] = g_battery;
+		/* BATTERY: offset 43 */
+		resp[43] = g_battery;
 
-		/* TEMPERATURE: offset 41, int16 BE */
-		resp[41] = (uint8_t)(g_temperature >> 8);
-		resp[42] = (uint8_t)(g_temperature);
+		/* TEMPERATURE: offset 44, int16 BE */
+		resp[44] = (uint8_t)(g_temperature >> 8);
+		resp[45] = (uint8_t)(g_temperature);
 
-		/* DISTANCE: offset 43, uint16 BE */
-		resp[43] = (uint8_t)(g_distance >> 8);
-		resp[44] = (uint8_t)(g_distance);
+		/* DISTANCE: offset 46, uint16 BE */
+		resp[46] = (uint8_t)(g_distance >> 8);
+		resp[47] = (uint8_t)(g_distance);
 
-		/* POSITION: offset 45 */
-		resp[45] = g_position;
+		/* POSITION: offset 48 */
+		resp[48] = g_position;
 
-		/* MODE: offset 46 */
-		resp[46] = g_mode;
+		/* MODE: offset 49 */
+		resp[49] = g_mode;
 
-		/* UPDATE_TIME: offset 47, uint16 BE */
-		resp[47] = (uint8_t)(g_update_time >> 8);
-		resp[48] = (uint8_t)(g_update_time);
+		/* UPDATE_TIME: offset 50, uint16 BE */
+		resp[50] = (uint8_t)(g_update_time >> 8);
+		resp[51] = (uint8_t)(g_update_time);
 
-		/* RESERVED: offset 49, 1 byte — 已为0 */
+		/* GNSS_FIX: offset 52 */
+		resp[52] = g_gnss_fix;
+
+		/* LATITUDE: offset 53, int32 BE */
+		resp[53] = (uint8_t)(g_latitude >> 24);
+		resp[54] = (uint8_t)(g_latitude >> 16);
+		resp[55] = (uint8_t)(g_latitude >> 8);
+		resp[56] = (uint8_t)(g_latitude);
+
+		/* LONGITUDE: offset 57, int32 BE */
+		resp[57] = (uint8_t)(g_longitude >> 24);
+		resp[58] = (uint8_t)(g_longitude >> 16);
+		resp[59] = (uint8_t)(g_longitude >> 8);
+		resp[60] = (uint8_t)(g_longitude);
+
+		/* ALTITUDE: offset 61, int16 BE */
+		resp[61] = (uint8_t)(g_altitude >> 8);
+		resp[62] = (uint8_t)(g_altitude);
+
 		break;
 	}
 	default:
@@ -258,6 +300,24 @@ static void apply_write_config(const uint8_t *args, uint32_t args_len,
 		g_update_time = ((uint16_t)args[1] << 8) | args[2];
 		printk("[%s] update_time set to %u min\n", channel, g_update_time);
 		break;
+	case APP_CONFIG_PARAM_INSTALL_POS:
+		if (args_len < 9) {
+			printk("[%s] install_pos payload too short\n", channel);
+			break;
+		}
+		g_latitude  = ((int32_t)args[1] << 24) |
+			      ((int32_t)args[2] << 16) |
+			      ((int32_t)args[3] << 8)  |
+			      (int32_t)args[4];
+		g_longitude = ((int32_t)args[5] << 24) |
+			      ((int32_t)args[6] << 16) |
+			      ((int32_t)args[7] << 8)  |
+			      (int32_t)args[8];
+		g_gnss_fix = 1;
+		g_altitude = 0;
+		printk("[%s] install pos set: lat=%d, lng=%d\n",
+		       channel, g_latitude, g_longitude);
+		break;
 	default:
 		printk("[%s] unknown param_id 0x%02x\n", channel, param_id);
 		break;
@@ -282,6 +342,16 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 	}
 
 	print_frame("NFC", "RX cmd", payload, payload_len);
+
+	/* 解析 CMD 0x01 时间戳 */
+	if (cmd == APP_CONFIG_CMD_READ_INFO) {
+		if (payload_len >= 5) {
+			g_unixtime = ((uint32_t)payload[1] << 24) |
+				     ((uint32_t)payload[2] << 16) |
+				     ((uint32_t)payload[3] << 8)  |
+				     (uint32_t)payload[4];
+		}
+	}
 
 	/* 处理 CMD 0x02: 写入配置 */
 	if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
@@ -334,7 +404,15 @@ void app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 
 	print_frame("BLE", "RX cmd", data, len);
 
-	if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
+	if (cmd == APP_CONFIG_CMD_READ_INFO) {
+		/* 解析时间戳：data[1..4] uint32 BE，可选字段（APP 可能不带） */
+		if (len >= 5) {
+			g_unixtime = ((uint32_t)data[1] << 24) |
+				     ((uint32_t)data[2] << 16) |
+				     ((uint32_t)data[3] << 8)  |
+				     (uint32_t)data[4];
+		}
+	} else if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
 		if (len < 3) {
 			printk("[BLE] CMD 0x02 payload too short\n");
 			resp[0] = cmd;
