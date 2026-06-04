@@ -171,3 +171,63 @@ SHELL_STATIC_SUBCMD_SET_CREATE(config_cmds,
 );
 
 SHELL_CMD_REGISTER(config, &config_cmds, "Device configuration", NULL);
+
+/* ── OTA 调试命令 ── */
+
+static int cmd_ota_info(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	struct app_config_ota_info info;
+
+	app_config_ota_get_info(&info);
+
+	const char *state = info.done ? "done" : (info.active ? "receiving" : "idle");
+
+	shell_print(sh, "state         : %s", state);
+	shell_print(sh, "total_size    : %u bytes", info.total_size);
+	shell_print(sh, "packets_rcvd  : %u", info.packets_received);
+	shell_print(sh, "bytes_rcvd    : %u", info.bytes_received);
+	return 0;
+}
+
+static int cmd_ota_dump(const struct shell *sh, size_t argc, char **argv)
+{
+	uint32_t offset = (uint32_t)strtoul(argv[1], NULL, 0);
+	uint32_t len    = (uint32_t)strtoul(argv[2], NULL, 0);
+
+	if (len > 512) {
+		len = 512;
+	}
+	if (offset >= APP_CONFIG_OTA_BUF_SIZE) {
+		shell_error(sh, "offset out of range");
+		return -EINVAL;
+	}
+	if (offset + len > APP_CONFIG_OTA_BUF_SIZE) {
+		len = APP_CONFIG_OTA_BUF_SIZE - offset;
+	}
+
+	const uint8_t *buf = app_config_ota_get_buf();
+	char line[58];  /* "xxxx: " + 16×" xx" = 5 + 48 = 53 */
+
+	for (uint32_t i = 0; i < len; i += 16) {
+		int pos = snprintf(line, sizeof(line), "%04x:", offset + i);
+
+		for (uint32_t j = i; j < len && j < i + 16; j++) {
+			pos += snprintf(line + pos, sizeof(line) - pos,
+					" %02x", buf[offset + j]);
+		}
+		shell_print(sh, "%s", line);
+	}
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(ota_cmds,
+	SHELL_CMD(info, NULL, "OTA receive status", cmd_ota_info),
+	SHELL_CMD_ARG(dump, NULL, "Hex dump OTA buffer: dump <offset> <len>",
+		      cmd_ota_dump, 3, 0),
+	SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(ota, &ota_cmds, "OTA firmware debug", NULL);

@@ -18,6 +18,9 @@ extern "C" {
 /** 命令码 */
 #define APP_CONFIG_CMD_READ_INFO    0x01
 #define APP_CONFIG_CMD_WRITE_CONFIG 0x02
+#define APP_CONFIG_CMD_OTA_START    0x10
+#define APP_CONFIG_CMD_OTA_DATA     0x11
+#define APP_CONFIG_CMD_OTA_END      0x12
 
 /** CMD 0x02 参数子项 param_id */
 #define APP_CONFIG_PARAM_MODE            0x01
@@ -28,11 +31,28 @@ extern "C" {
 #define APP_CONFIG_STATUS_OK            0x00
 #define APP_CONFIG_STATUS_UNSUPPORTED   0x01
 #define APP_CONFIG_STATUS_BUSY          0x02
+#define APP_CONFIG_STATUS_OTA_DATA_LEN  0x03
+#define APP_CONFIG_STATUS_OTA_IDX       0x04
 #define APP_CONFIG_STATUS_UNKNOWN       0xFF
 
 /** 应答Payload定长 */
 #define APP_CONFIG_RESPONSE_PAYLOAD_SIZE 63
 #define APP_CONFIG_DEVICE_TYPE           0x01
+
+/** OTA 调试缓冲区（RAM，32KB）*/
+#define APP_CONFIG_OTA_BUF_SIZE  (32 * 1024)
+#define APP_CONFIG_OTA_PKT_DATA  492
+
+struct app_config_ota_info {
+	bool     active;
+	bool     done;
+	uint32_t total_size;
+	uint16_t packets_received;
+	uint32_t bytes_received;
+};
+
+void app_config_ota_get_info(struct app_config_ota_info *info);
+const uint8_t *app_config_ota_get_buf(void);
 
 /** External Type 字符串 */
 #define APP_CONFIG_CMD_TYPE      "ulpinternal:cmd"
@@ -84,8 +104,9 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size);
  * @param data   BLE收到的原始bytes
  * @param len    数据长度
  * @param resp   输出缓冲区，须>=APP_CONFIG_RESPONSE_PAYLOAD_SIZE(63)字节
+ * @return 实际应答字节数，0 表示无需回复（如 OTA 数据包）
  */
-void app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp);
+uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp);
 
 #ifdef __cplusplus
 }

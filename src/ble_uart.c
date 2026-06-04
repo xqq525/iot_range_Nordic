@@ -50,6 +50,7 @@ static const struct bt_data sd[] = {
 /* BLE响应发送：等CCCD订阅后再发送 */
 static bool nus_tx_subscribed;
 static bool resp_pending;
+static uint16_t resp_len_pending;
 static struct bt_conn *resp_conn;
 static uint8_t resp_buf[APP_CONFIG_RESPONSE_PAYLOAD_SIZE];
 
@@ -66,7 +67,7 @@ static void send_pending_resp(void)
 		return;
 	}
 
-	int err = bt_nus_send(resp_conn, resp_buf, sizeof(resp_buf));
+	int err = bt_nus_send(resp_conn, resp_buf, resp_len_pending);
 	if (err) {
 		retry_cnt++;
 		if (retry_cnt >= RESP_RETRY_MAX) {
@@ -301,14 +302,16 @@ static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data,
 		return;
 	}
 
-	app_config_handle_ble(data, len, resp_buf);
-	resp_conn = conn;
-	resp_pending = true;
+	uint16_t resp_len = app_config_handle_ble(data, len, resp_buf);
+	if (resp_len > 0) {
+		resp_conn = conn;
+		resp_pending = true;
+		resp_len_pending = resp_len;
+		/* 延迟发送，确保 ATT 通知通道完全就绪 */
+		k_work_schedule(&send_retry_work, K_MSEC(500));
+	}
 
-	/* 总是延迟发送，确保 ATT 通知通道完全就绪 */
-	k_work_schedule(&send_retry_work, K_MSEC(500));
-
-	if (!nus_tx_subscribed) {
+	if (resp_len > 0 && !nus_tx_subscribed) {
 		LOG_INF("NUS TX not subscribed yet, will retry after subscribe");
 	}
 }

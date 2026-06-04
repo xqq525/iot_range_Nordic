@@ -52,6 +52,33 @@ void app_config_set_altitude(int16_t alt)       { g_altitude = alt; }
 
 static uint32_t g_unixtime;  /* APP 最后一次 CMD 0x01 携带的时间戳，秒级 */
 
+/* ── OTA 状态（调试阶段：数据存 RAM） ── */
+
+struct ota_state {
+	bool     active;
+	bool     done;
+	uint32_t total_size;
+	uint16_t next_idx;
+	uint32_t bytes_received;
+	uint8_t  buf[APP_CONFIG_OTA_BUF_SIZE];
+};
+
+static struct ota_state g_ota;
+
+void app_config_ota_get_info(struct app_config_ota_info *info)
+{
+	info->active           = g_ota.active;
+	info->done             = g_ota.done;
+	info->total_size       = g_ota.total_size;
+	info->packets_received = g_ota.next_idx;
+	info->bytes_received   = g_ota.bytes_received;
+}
+
+const uint8_t *app_config_ota_get_buf(void)
+{
+	return g_ota.buf;
+}
+
 uint32_t app_config_get_unixtime(void) { return g_unixtime; }
 
 /* ── NDEF记录标志 ── */
@@ -394,18 +421,66 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 	return true;
 }
 
-void app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
+uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 {
 	if (len < 1) {
-		return;
+		return 0;
 	}
 
 	uint8_t cmd = data[0];
 
-	print_frame("BLE", "RX cmd", data, len);
+	/* OTA 数据包不打印帧（频繁，会刷屏） */
+	if (cmd != APP_CONFIG_CMD_OTA_DATA) {
+		print_frame("BLE", "RX cmd", data, len);
+	}
 
+	/* ── OTA 命令处理 ── */
+	if (cmd == APP_CONFIG_CMD_OTA_START) {
+		memset(&g_ota, 0, offsetof(struct ota_state, buf));
+		if (len >= 5) {
+			g_ota.total_size = ((uint32_t)data[1] << 24) |
+					   ((uint32_t)data[2] << 16) |
+					   ((uint32_t)data[3] << 8)  |
+					   (uint32_t)data[4];
+		}
+		g_ota.active = true;
+		printk("[BLE] OTA start: total=%u bytes\n", g_ota.total_size);
+		resp[0] = APP_CONFIG_CMD_OTA_START;
+		resp[1] = APP_CONFIG_STATUS_OK;
+		print_frame("BLE", "TX resp", resp, 2);
+		return 2;
+	}
+
+	if (cmd == APP_CONFIG_CMD_OTA_DATA) {
+		if (len >= 4) {
+			uint16_t idx      = ((uint16_t)data[1] << 8) | data[2];
+			uint16_t data_len = len - 3;
+			uint32_t offset   = (uint32_t)idx * APP_CONFIG_OTA_PKT_DATA;
+
+			if (offset + data_len <= APP_CONFIG_OTA_BUF_SIZE) {
+				memcpy(&g_ota.buf[offset], &data[3], data_len);
+				g_ota.bytes_received += data_len;
+			} else {
+				printk("[BLE] OTA buf full, drop idx=%u\n", idx);
+			}
+			g_ota.next_idx = idx + 1;
+		}
+		return 0;  /* 流式模式不应答 */
+	}
+
+	if (cmd == APP_CONFIG_CMD_OTA_END) {
+		g_ota.active = false;
+		g_ota.done   = true;
+		printk("[BLE] OTA end: %u bytes in %u packets\n",
+		       g_ota.bytes_received, g_ota.next_idx);
+		resp[0] = APP_CONFIG_CMD_OTA_END;
+		resp[1] = APP_CONFIG_STATUS_OK;
+		print_frame("BLE", "TX resp", resp, 2);
+		return 2;
+	}
+
+	/* ── 原有命令 0x01 / 0x02 ── */
 	if (cmd == APP_CONFIG_CMD_READ_INFO) {
-		/* 解析时间戳：data[1..4] uint32 BE，可选字段（APP 可能不带） */
 		if (len >= 5) {
 			g_unixtime = ((uint32_t)data[1] << 24) |
 				     ((uint32_t)data[2] << 16) |
@@ -419,13 +494,12 @@ void app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 			resp[1] = APP_CONFIG_STATUS_BUSY;
 			memset(&resp[2], 0, APP_CONFIG_RESPONSE_PAYLOAD_SIZE - 2);
 			print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
-			return;
+			return APP_CONFIG_RESPONSE_PAYLOAD_SIZE;
 		}
-		/* data[0]=CMD, data[1]=param_id, data[2..]=value */
 		apply_write_config(&data[1], len - 1, "BLE");
 	}
 
 	response_build(cmd, resp);
-
 	print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
+	return APP_CONFIG_RESPONSE_PAYLOAD_SIZE;
 }
