@@ -26,6 +26,7 @@ extern "C" {
 #define APP_CONFIG_PARAM_MODE            0x01
 #define APP_CONFIG_PARAM_REPORT_INTERVAL 0x02
 #define APP_CONFIG_PARAM_INSTALL_POS     0x03
+#define APP_CONFIG_PARAM_MODEL_CHECK     0x04
 
 /** 错误码 */
 #define APP_CONFIG_STATUS_OK            0x00
@@ -33,6 +34,7 @@ extern "C" {
 #define APP_CONFIG_STATUS_BUSY          0x02
 #define APP_CONFIG_STATUS_OTA_DATA_LEN  0x03
 #define APP_CONFIG_STATUS_OTA_IDX       0x04
+#define APP_CONFIG_STATUS_MODEL_MISMATCH 0x05
 #define APP_CONFIG_STATUS_UNKNOWN       0xFF
 
 /** 应答Payload定长 */

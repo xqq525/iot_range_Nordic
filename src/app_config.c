@@ -52,6 +52,47 @@ void app_config_set_altitude(int16_t alt)       { g_altitude = alt; }
 
 static uint32_t g_unixtime;  /* APP 最后一次 CMD 0x01 携带的时间戳，秒级 */
 
+/* ── 可读名称映射 ── */
+
+static const char *mode_name(uint8_t mode)
+{
+	switch (mode) {
+	case 0x01: return "bin";
+	case 0x02: return "trash";
+	case 0x03: return "shelf";
+	default:   return "unknown";
+	}
+}
+
+static const char *pos_name(uint8_t pos)
+{
+	switch (pos) {
+	case 0x00: return "normal";
+	case 0x01: return "tilt";
+	default:   return "unknown";
+	}
+}
+
+/* ── 打印全部配置 ── */
+
+static void print_config(void)
+{
+	printk("  model       : %s\n", g_model);
+	printk("  sn          : %s\n", g_sn);
+	printk("  fw          : %d.%d.%d\n", g_fw_ver[0], g_fw_ver[1], g_fw_ver[2]);
+	printk("  hw          : %d.%d.%d\n", g_hw_ver[0], g_hw_ver[1], g_hw_ver[2]);
+	printk("  battery     : %u%%\n", g_battery);
+	printk("  temperature : %d.%d C\n", g_temperature / 10, (g_temperature % 10 + 10) % 10);
+	printk("  distance    : %u cm\n", g_distance);
+	printk("  position    : 0x%02x (%s)\n", g_position, pos_name(g_position));
+	printk("  mode        : 0x%02x (%s)\n", g_mode, mode_name(g_mode));
+	printk("  interval    : %u min\n", g_update_time);
+	printk("  gnss_fix    : %u\n", g_gnss_fix);
+	printk("  latitude    : %d (x1e7)\n", g_latitude);
+	printk("  longitude   : %d (x1e7)\n", g_longitude);
+	printk("  altitude    : %d m\n", g_altitude);
+}
+
 /* ── OTA 状态（调试阶段：数据存 RAM） ── */
 
 struct ota_state {
@@ -306,48 +347,71 @@ static void print_frame(const char *channel, const char *dir,
 
 /* ── 命令参数处理（NFC/BLE共用） ── */
 
-static void apply_write_config(const uint8_t *args, uint32_t args_len,
-				const char *channel)
+static uint8_t apply_write_config(const uint8_t *args, uint32_t args_len,
+				   const char *channel)
 {
 	if (args_len < 2) {
 		printk("[%s] CMD 0x02 payload too short\n", channel);
-		return;
+		return APP_CONFIG_STATUS_OK;
 	}
 	uint8_t param_id = args[0];
 	switch (param_id) {
-	case APP_CONFIG_PARAM_MODE:
+	case APP_CONFIG_PARAM_MODE: {
+		uint8_t old = g_mode;
 		g_mode = args[1];
-		printk("[%s] mode set to 0x%02x\n", channel, g_mode);
-		break;
+		printk("[%s] mode: %s (0x%02x) -> %s (0x%02x)\n",
+		       channel, mode_name(old), old, mode_name(g_mode), g_mode);
+		return APP_CONFIG_STATUS_OK;
+	}
 	case APP_CONFIG_PARAM_REPORT_INTERVAL:
 		if (args_len < 3) {
 			printk("[%s] interval payload too short\n", channel);
-			break;
+			return APP_CONFIG_STATUS_OK;
 		}
-		g_update_time = ((uint16_t)args[1] << 8) | args[2];
-		printk("[%s] update_time set to %u min\n", channel, g_update_time);
-		break;
+		{
+			uint16_t old = g_update_time;
+			g_update_time = ((uint16_t)args[1] << 8) | args[2];
+			printk("[%s] interval: %u min -> %u min\n",
+			       channel, old, g_update_time);
+		}
+		return APP_CONFIG_STATUS_OK;
 	case APP_CONFIG_PARAM_INSTALL_POS:
 		if (args_len < 9) {
 			printk("[%s] install_pos payload too short\n", channel);
-			break;
+			return APP_CONFIG_STATUS_OK;
 		}
-		g_latitude  = ((int32_t)args[1] << 24) |
-			      ((int32_t)args[2] << 16) |
-			      ((int32_t)args[3] << 8)  |
-			      (int32_t)args[4];
-		g_longitude = ((int32_t)args[5] << 24) |
-			      ((int32_t)args[6] << 16) |
-			      ((int32_t)args[7] << 8)  |
-			      (int32_t)args[8];
-		g_gnss_fix = 1;
-		g_altitude = 0;
-		printk("[%s] install pos set: lat=%d, lng=%d\n",
-		       channel, g_latitude, g_longitude);
-		break;
+		{
+			int32_t old_lat = g_latitude;
+			int32_t old_lng = g_longitude;
+			g_latitude  = ((int32_t)args[1] << 24) |
+				      ((int32_t)args[2] << 16) |
+				      ((int32_t)args[3] << 8)  |
+				      (int32_t)args[4];
+			g_longitude = ((int32_t)args[5] << 24) |
+				      ((int32_t)args[6] << 16) |
+				      ((int32_t)args[7] << 8)  |
+				      (int32_t)args[8];
+			g_gnss_fix = 1;
+			g_altitude = 0;
+			printk("[%s] install_pos: lat %d -> %d, lng %d -> %d\n",
+			       channel, old_lat, g_latitude, old_lng, g_longitude);
+		}
+		return APP_CONFIG_STATUS_OK;
+	case APP_CONFIG_PARAM_MODEL_CHECK: {
+		/* args[1..] 为 APP 下发的设备型号字符串（含 '\0'） */
+		uint32_t model_len = args_len - 1;
+		if (model_len > 16) model_len = 16;
+		if (model_len == strlen(g_model) + 1 &&
+		    memcmp(&args[1], g_model, model_len) == 0) {
+			printk("[%s] model check: match (%s)\n", channel, g_model);
+			return APP_CONFIG_STATUS_OK;
+		}
+		printk("[%s] model check: mismatch (expected %s)\n", channel, g_model);
+		return APP_CONFIG_STATUS_MODEL_MISMATCH;
+	}
 	default:
 		printk("[%s] unknown param_id 0x%02x\n", channel, param_id);
-		break;
+		return APP_CONFIG_STATUS_OK;
 	}
 }
 
@@ -370,7 +434,7 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 
 	print_frame("NFC", "RX cmd", payload, payload_len);
 
-	/* 解析 CMD 0x01 时间戳 */
+	/* CMD 0x01: 解析时间戳 + 打印全部配置 */
 	if (cmd == APP_CONFIG_CMD_READ_INFO) {
 		if (payload_len >= 5) {
 			g_unixtime = ((uint32_t)payload[1] << 24) |
@@ -378,21 +442,27 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 				     ((uint32_t)payload[3] << 8)  |
 				     (uint32_t)payload[4];
 		}
+		printk("[NFC] config get\n");
+		print_config();
 	}
 
 	/* 处理 CMD 0x02: 写入配置 */
+	uint8_t wstatus = APP_CONFIG_STATUS_OK;
 	if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
 		if (payload_len < 3) {
 			printk("[NFC] CMD 0x02 payload too short\n");
 			return false;
 		}
 		/* payload[0]=CMD, payload[1]=param_id, payload[2..]=value */
-		apply_write_config(&payload[1], payload_len - 1, "NFC");
+		wstatus = apply_write_config(&payload[1], payload_len - 1, "NFC");
 	}
 
 	/* 构建应答payload */
 	uint8_t resp[APP_CONFIG_RESPONSE_PAYLOAD_SIZE];
 	response_build(cmd, resp);
+	if (wstatus != APP_CONFIG_STATUS_OK) {
+		resp[1] = wstatus;
+	}
 
 	print_frame("NFC", "TX resp", resp, sizeof(resp));
 
@@ -480,6 +550,7 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 	}
 
 	/* ── 原有命令 0x01 / 0x02 ── */
+	uint8_t wstatus = APP_CONFIG_STATUS_OK;
 	if (cmd == APP_CONFIG_CMD_READ_INFO) {
 		if (len >= 5) {
 			g_unixtime = ((uint32_t)data[1] << 24) |
@@ -487,6 +558,8 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 				     ((uint32_t)data[3] << 8)  |
 				     (uint32_t)data[4];
 		}
+		printk("[BLE] config get\n");
+		print_config();
 	} else if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
 		if (len < 3) {
 			printk("[BLE] CMD 0x02 payload too short\n");
@@ -496,10 +569,13 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 			print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
 			return APP_CONFIG_RESPONSE_PAYLOAD_SIZE;
 		}
-		apply_write_config(&data[1], len - 1, "BLE");
+		wstatus = apply_write_config(&data[1], len - 1, "BLE");
 	}
 
 	response_build(cmd, resp);
+	if (wstatus != APP_CONFIG_STATUS_OK) {
+		resp[1] = wstatus;
+	}
 	print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
 	return APP_CONFIG_RESPONSE_PAYLOAD_SIZE;
 }
