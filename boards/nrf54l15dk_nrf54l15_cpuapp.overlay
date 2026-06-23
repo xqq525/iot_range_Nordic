@@ -1,0 +1,123 @@
+/*
+ * Copyright (c) 2024-2026
+ *
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+ *
+ * PCB-A nRF54L15 最小 overlay — NFC + BLE 联调阶段
+ *
+ * 仅启用 NFC 和 BLE 两个可调试功能。
+ * 其余外设引脚已按 docs/pcb_a_io_map.md 分配，
+ * 待各外设驱动就绪后逐步加入此 overlay。
+ */
+
+/* ── 清除 DK 默认节点与别名（释放 GPIO） ── */
+/ {
+	/delete-node/ leds;
+	/delete-node/ buttons;
+	/delete-node/ pwmleds;
+
+	aliases {
+		/delete-property/ led0;
+		/delete-property/ led1;
+		/delete-property/ led2;
+		/delete-property/ led3;
+		/delete-property/ pwm-led0;
+		/delete-property/ sw0;
+		/delete-property/ sw1;
+		/delete-property/ sw2;
+		/delete-property/ sw3;
+		/delete-property/ mcuboot-button0;
+		/delete-property/ mcuboot-led0;
+	};
+
+	/* 清理 chosen 中引用已禁用 uart20 的属性，避免构建警告 */
+	chosen {
+		/delete-property/ zephyr,console;
+		/delete-property/ zephyr,shell-uart;
+		/delete-property/ zephyr,uart-mcumgr;
+		/delete-property/ zephyr,bt-mon-uart;
+		/delete-property/ zephyr,bt-c2h-uart;
+	};
+};
+
+/* ── 释放 uart20 占用的 P1.04~P1.07 ── */
+/* PCB-A: P1.04=NTC_ADC, P1.05=VBAT_ADC, P1.06=US_RX, P1.07=US_TX */
+&uart20 {
+	/delete-property/ pinctrl-0;
+	/delete-property/ pinctrl-1;
+	/delete-property/ pinctrl-names;
+	status = "disabled";
+};
+
+/* ── 释放 pwm20 占用的 P1.10 ── */
+/* PCB-A: P1.10=CC_I2C_SDA (ATECC608C) */
+&pwm20 {
+	/delete-property/ pinctrl-0;
+	/delete-property/ pinctrl-1;
+	/delete-property/ pinctrl-names;
+	status = "disabled";
+};
+
+/* ── 释放 spi22 占用的 P1.06/P1.07/P1.11 ── */
+/* PCB-A: P1.06=US_RX, P1.07=US_TX, P1.11=CC_I2C_SCL */
+&spi22 {
+	/delete-property/ pinctrl-0;
+	/delete-property/ pinctrl-1;
+	/delete-property/ pinctrl-names;
+	/delete-property/ cs-gpios;
+	status = "disabled";
+};
+
+/* ── GRTC — 无需禁用 ──
+ * DK 默认 &grtc pinctrl (grtc_default/grtc_sleep) 使用 /omit-if-no-ref/ 编译指令，
+ * 且 &grtc 节点本身未引用这两个 pinctrl 配置（见 rf54l_05_10_15_cpuapp_common.dtsi:53-58）。
+ * 因此 GRTC CLKOUT_FAST(P1.08) / CLKOUT_32K(P0.04) 引脚不会被占用，
+ * PCB-A 的 LED_PWM(P1.08) / ACC_I2C_SCL(P0.04) 无冲突风险。
+ * GRTC 作为内部定时器保持使能，不影响 GPIO。
+ */
+
+/* ── NFC 使能（P1.02/P1.03 固定功能，与 PCB-A 一致） ── */
+&nfct {
+	status = "okay";
+};
+
+/* ── Flash SPIM00 — DK 默认与 PCB-A 一致，无需覆盖 ── */
+/* P2.01=SCK, P2.02=MOSI, P2.04=MISO, P2.05=CS → W25Q32JVSSIQ */
+
+/* ═══════════════════════════════════════════════════════════════
+ * 以下为 PCB-A 外设预留引脚说明（暂不启用，只做文档记录）
+ * 参见 docs/pcb_a_io_map.md 完整分配表
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * ── 硬件 I2C ──
+ * TWIM30 (BMA510) : P0.04 SCL / P0.03 SDA  (常开低功耗域)
+ * TWIM20 (TOF)    : P1.12 SCL / P1.13 SDA
+ * TWIM22 (ATECC)  : P1.11 SCL / P1.10 SDA
+ *
+ * ── 硬件 UART ──
+ * UART21 (LPWA)   : P2.08 TXD / P2.07 RXD  (P2.07 与 SWO 复用)
+ *
+ * ── 软件 UART (GPIO bit-bang) ──
+ * 超声波           : P1.07 TX / P1.06 RX
+ * GNSS (预留)      : P2.09 TX / P2.10 RX     (P2 无 GPIOTE)
+ *
+ * ── ADC ──
+ * SAADC AIN0 (NTC) : P1.04
+ * SAADC AIN1 (VBAT): P1.05
+ *
+ * ── GPIO ──
+ * P0.00 NTC_INT    (输入, wake)
+ * P0.01 REST_KEY   (输入, wake, 低有效)
+ * P0.02 ACC_INT    (输入, wake, BMA510)
+ * P1.08 LED_PWM    (输出, WS2812B)
+ * P1.09 MK_EN      (输出, 电源控制, 默认关断)
+ * P1.14 TOF_INT    (输入, wake)
+ * P2.00 LPWA_POWER (输出, PWRKEY 时序)
+ * P2.03 LPWA_EN    (输出, 电源使能)
+ * P2.06 LPWA_PSM   (输出, PSM 控制)
+ *
+ * ── 固定功能（无需 overlay） ──
+ * P1.00 OSC32IN / P1.01 OSC32OUT (32.768kHz 晶振)
+ * P1.02 NFC1  / P1.03 NFC2       (NFC 天线)
+ * ANT (BLE 射频)
+ */

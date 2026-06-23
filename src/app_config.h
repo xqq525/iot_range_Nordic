@@ -74,6 +74,10 @@ void app_config_set_latitude(int32_t lat);
 void app_config_set_longitude(int32_t lng);
 void app_config_set_altitude(int16_t alt);
 
+/* 设备固定信息 */
+const char *app_config_get_model(void);
+const char *app_config_get_sn(void);
+
 /* 全局时间戳（APP CMD 0x01 附带） */
 uint32_t app_config_get_unixtime(void);
 

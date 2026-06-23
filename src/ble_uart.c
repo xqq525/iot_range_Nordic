@@ -14,7 +14,9 @@
 
 #include <bluetooth/services/nus.h>
 
+#ifdef CONFIG_DK_LIBRARY
 #include <dk_buttons_and_leds.h>
+#endif
 
 #include <zephyr/settings/settings.h>
 
@@ -26,22 +28,30 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 #include "ble_uart.h"
 #include "app_config.h"
 
-#define DEVICE_NAME CONFIG_BT_DEVICE_NAME
-#define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
+#include <stdio.h>
 
+#define BLE_NAME_MAX 32
+static char ble_name[BLE_NAME_MAX];
+
+#ifdef CONFIG_DK_LIBRARY
 #define BLE_CON_LED DK_LED3
 
 #define KEY_PASSKEY_ACCEPT DK_BTN1_MSK
 #define KEY_PASSKEY_REJECT DK_BTN2_MSK
+#else
+/* PCB-A 无 DK LED/按键 — 空宏替代 */
+#define BLE_CON_LED 0
+
+#define KEY_PASSKEY_ACCEPT 0
+#define KEY_PASSKEY_REJECT 0
+
+static inline void dk_set_led_on(uint8_t led) { (void)led; }
+static inline void dk_set_led_off(uint8_t led) { (void)led; }
+#endif
 
 static struct bt_conn *current_conn;
 static struct bt_conn *auth_conn;
 static struct k_work adv_work;
-
-static const struct bt_data ad[] = {
-	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
-};
 
 static const struct bt_data sd[] = {
 	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NUS_VAL),
@@ -103,7 +113,13 @@ static void nus_send_enabled_cb(enum bt_nus_send_status status)
 
 static void adv_work_handler(struct k_work *work)
 {
-	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	struct bt_data ad[] = {
+		BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+		BT_DATA(BT_DATA_NAME_COMPLETE, ble_name, strlen(ble_name)),
+	};
+
+	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad),
+				  sd, ARRAY_SIZE(sd));
 
 	if (err) {
 		LOG_ERR("Advertising failed to start (err %d)", err);
@@ -257,6 +273,7 @@ static struct bt_conn_auth_info_cb conn_auth_info_callbacks = {
 	.pairing_failed = pairing_failed
 };
 
+#if defined(CONFIG_DK_LIBRARY)
 static void num_comp_reply(bool accept)
 {
 	if (accept) {
@@ -285,6 +302,7 @@ static void button_changed(uint32_t button_state, uint32_t has_changed)
 		}
 	}
 }
+#endif /* CONFIG_DK_LIBRARY */
 #else
 static struct bt_conn_auth_cb conn_auth_callbacks;
 static struct bt_conn_auth_info_cb conn_auth_info_callbacks;
@@ -296,11 +314,13 @@ static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data,
 	char addr[BT_ADDR_LE_STR_LEN] = {0};
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, ARRAY_SIZE(addr));
-	LOG_INF("Received from %s, len=%u, cmd=0x%02x", addr, len, data[0]);
 
 	if (len < 1) {
+		LOG_WRN("Received empty packet from %s", addr);
 		return;
 	}
+
+	LOG_INF("Received from %s, len=%u, cmd=0x%02x", addr, len, data[0]);
 
 	uint16_t resp_len = app_config_handle_ble(data, len, resp_buf);
 	if (resp_len > 0) {
@@ -325,7 +345,7 @@ int ble_uart_init(void)
 {
 	int err;
 
-#if defined(CONFIG_BT_NUS_SECURITY_ENABLED)
+#if defined(CONFIG_BT_NUS_SECURITY_ENABLED) && defined(CONFIG_DK_LIBRARY)
 	err = dk_buttons_init(button_changed);
 	if (err) {
 		LOG_ERR("Cannot init buttons (err: %d)", err);
@@ -353,7 +373,10 @@ int ble_uart_init(void)
 		return err;
 	}
 
-	LOG_INF("Bluetooth initialized");
+	snprintf(ble_name, sizeof(ble_name), "%s_%s",
+		 app_config_get_model(), app_config_get_sn());
+	bt_set_name(ble_name);
+	LOG_INF("Bluetooth initialized, name: %s", ble_name);
 
 	if (IS_ENABLED(CONFIG_SETTINGS)) {
 		settings_load();

@@ -13,7 +13,7 @@
 
 /* ── 设备固定信息 ── */
 
-static const char g_model[] = "ULP_RS001";
+static const char g_model[] = "ULP_RS100";
 static const char g_sn[]   = "123456";
 
 static const uint8_t g_fw_ver[] = {1, 0, 0};
@@ -119,6 +119,9 @@ const uint8_t *app_config_ota_get_buf(void)
 {
 	return g_ota.buf;
 }
+
+const char *app_config_get_model(void) { return g_model; }
+const char *app_config_get_sn(void)    { return g_sn; }
 
 uint32_t app_config_get_unixtime(void) { return g_unixtime; }
 

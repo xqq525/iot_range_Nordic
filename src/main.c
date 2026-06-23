@@ -21,18 +21,34 @@
 #include <nfc/ndef/msg.h>
 #include <nfc/t4t/ndef_file.h>
 
+#ifdef CONFIG_DK_LIBRARY
 #include <dk_buttons_and_leds.h>
-
-#include "ndef_file_m.h"
-#include "app_config.h"
-#include "ble_uart.h"
-
 
 #define NFC_FIELD_LED		DK_LED1
 #define NFC_WRITE_LED		DK_LED2
 #define NFC_READ_LED		DK_LED4
-
 #define NDEF_RESTORE_BTN_MSK	DK_BTN1_MSK
+#else
+/* PCB-A 无 DK LED/按键 — 空宏替代 */
+#define NFC_FIELD_LED		0
+#define NFC_WRITE_LED		0
+#define NFC_READ_LED		0
+#define NDEF_RESTORE_BTN_MSK	0
+
+static inline int dk_leds_init(void) { return 0; }
+static inline void dk_set_led_on(uint8_t led) { (void)led; }
+static inline void dk_set_led_off(uint8_t led) { (void)led; }
+static inline int dk_read_buttons(uint32_t *state, uint32_t *changed)
+{
+	if (state)   { *state = 0; }
+	if (changed) { *changed = 0; }
+	return 0;
+}
+#endif /* CONFIG_DK_LIBRARY */
+
+#include "ndef_file_m.h"
+#include "app_config.h"
+#include "ble_uart.h"
 
 static uint8_t ndef_msg_buf[CONFIG_NDEF_FILE_SIZE]; /**< Buffer for NDEF file. */
 
