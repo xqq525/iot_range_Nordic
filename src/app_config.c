@@ -5,6 +5,7 @@
  */
 
 #include "app_config.h"
+#include "app_auth.h"
 
 #include <zephyr/kernel.h>
 #include <string.h>
@@ -13,7 +14,7 @@
 
 /* ── 设备固定信息 ── */
 
-static const char g_model[] = "ULP_RS001";
+static const char g_model[] = "ULP_RS100";
 static const char g_sn[]   = "123456";
 
 static const uint8_t g_fw_ver[] = {1, 0, 0};
@@ -292,17 +293,17 @@ static bool ndef_parse_ext_cmd(const uint8_t *ndef_msg, uint32_t ndef_msg_len,
 /* ── 手动NDEF消息编码 ── */
 
 /**
- * @brief 将 ulpinternal:info 应答记录编码为NDEF消息，写入 dst。
- * @param payload     50字节应答payload
+ * @brief 将应答payload编码为NDEF消息（"ulpinternal:info" External Type）。
+ * @param payload     应答payload（长度可变）
+ * @param pay_len     payload 字节数
  * @param dst         目标缓冲区
  * @param dst_len     输入=缓冲区大小，输出=实际编码长度
  * @return 0=成功，负值=错误
  */
-static int ndef_encode_info_response(const uint8_t *payload,
-				     uint8_t *dst, uint32_t *dst_len)
+static int ndef_encode_response(const uint8_t *payload, uint32_t pay_len,
+				uint8_t *dst, uint32_t *dst_len)
 {
 	uint32_t type_len = APP_CONFIG_INFO_TYPE_LEN;
-	uint32_t pay_len  = APP_CONFIG_RESPONSE_PAYLOAD_SIZE;
 
 	/* 记录头: flags(1) + type_len(1) + pay_len_SR(1) = 3 */
 	uint32_t total = 3 + type_len + pay_len;
@@ -352,11 +353,15 @@ static uint8_t apply_write_config(const uint8_t *args, uint32_t args_len,
 {
 	if (args_len < 2) {
 		printk("[%s] CMD 0x02 payload too short\n", channel);
-		return APP_CONFIG_STATUS_OK;
+		return APP_CONFIG_STATUS_PARAM_LEN;
 	}
 	uint8_t param_id = args[0];
 	switch (param_id) {
 	case APP_CONFIG_PARAM_MODE: {
+		if (args[1] < 0x01 || args[1] > 0x03) {
+			printk("[%s] invalid mode 0x%02x\n", channel, args[1]);
+			return APP_CONFIG_STATUS_PARAM_VALUE;
+		}
 		uint8_t old = g_mode;
 		g_mode = args[1];
 		printk("[%s] mode: %s (0x%02x) -> %s (0x%02x)\n",
@@ -366,7 +371,7 @@ static uint8_t apply_write_config(const uint8_t *args, uint32_t args_len,
 	case APP_CONFIG_PARAM_REPORT_INTERVAL:
 		if (args_len < 3) {
 			printk("[%s] interval payload too short\n", channel);
-			return APP_CONFIG_STATUS_OK;
+			return APP_CONFIG_STATUS_PARAM_LEN;
 		}
 		{
 			uint16_t old = g_update_time;
@@ -378,19 +383,29 @@ static uint8_t apply_write_config(const uint8_t *args, uint32_t args_len,
 	case APP_CONFIG_PARAM_INSTALL_POS:
 		if (args_len < 9) {
 			printk("[%s] install_pos payload too short\n", channel);
-			return APP_CONFIG_STATUS_OK;
+			return APP_CONFIG_STATUS_PARAM_LEN;
 		}
 		{
 			int32_t old_lat = g_latitude;
 			int32_t old_lng = g_longitude;
-			g_latitude  = ((int32_t)args[1] << 24) |
-				      ((int32_t)args[2] << 16) |
-				      ((int32_t)args[3] << 8)  |
-				      (int32_t)args[4];
-			g_longitude = ((int32_t)args[5] << 24) |
-				      ((int32_t)args[6] << 16) |
-				      ((int32_t)args[7] << 8)  |
-				      (int32_t)args[8];
+			uint32_t lat_u = ((uint32_t)args[1] << 24) |
+					 ((uint32_t)args[2] << 16) |
+					 ((uint32_t)args[3] << 8)  |
+					 (uint32_t)args[4];
+			uint32_t lng_u = ((uint32_t)args[5] << 24) |
+					 ((uint32_t)args[6] << 16) |
+					 ((uint32_t)args[7] << 8)  |
+					 (uint32_t)args[8];
+			int32_t lat = (int32_t)lat_u;
+			int32_t lng = (int32_t)lng_u;
+			if (lat < -900000000 || lat > 900000000 ||
+			    lng < -1800000000 || lng > 1800000000) {
+				printk("[%s] invalid install_pos: lat=%d, lng=%d\n",
+				       channel, lat, lng);
+				return APP_CONFIG_STATUS_PARAM_VALUE;
+			}
+			g_latitude = lat;
+			g_longitude = lng;
 			g_gnss_fix = 1;
 			g_altitude = 0;
 			printk("[%s] install_pos: lat %d -> %d, lng %d -> %d\n",
@@ -411,7 +426,7 @@ static uint8_t apply_write_config(const uint8_t *args, uint32_t args_len,
 	}
 	default:
 		printk("[%s] unknown param_id 0x%02x\n", channel, param_id);
-		return APP_CONFIG_STATUS_OK;
+		return APP_CONFIG_STATUS_UNSUPPORTED;
 	}
 }
 
@@ -434,6 +449,34 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 
 	print_frame("NFC", "RX cmd", payload, payload_len);
 
+	/* ── CMD 0x03: 认证与密码管理 ── */
+	if (cmd == APP_CONFIG_CMD_AUTH) {
+		uint8_t auth_resp[64];
+		uint16_t auth_len = app_auth_handle_cmd(payload, payload_len,
+							auth_resp, "NFC");
+		if (auth_len == 0) {
+			return false;
+		}
+
+		print_frame("NFC", "TX resp", auth_resp, auth_len);
+
+		uint8_t *raw_msg = nfc_t4t_ndef_file_msg_get(ndef_msg_buf);
+		uint32_t raw_msg_size = nfc_t4t_ndef_file_msg_size_get(ndef_msg_buf_size);
+
+		int err = ndef_encode_response(auth_resp, auth_len,
+					       raw_msg, &raw_msg_size);
+		if (err) {
+			printk("[NFC] auth encode error %d\n", err);
+			return false;
+		}
+		err = nfc_t4t_ndef_file_encode(ndef_msg_buf, &raw_msg_size);
+		if (err) {
+			printk("[NFC] file encode error %d\n", err);
+			return false;
+		}
+		return true;
+	}
+
 	/* CMD 0x01: 解析时间戳 + 打印全部配置 */
 	if (cmd == APP_CONFIG_CMD_READ_INFO) {
 		if (payload_len >= 5) {
@@ -446,15 +489,19 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 		print_config();
 	}
 
-	/* 处理 CMD 0x02: 写入配置 */
+	/* 处理 CMD 0x02: 写入配置（需认证） */
 	uint8_t wstatus = APP_CONFIG_STATUS_OK;
 	if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
-		if (payload_len < 3) {
-			printk("[NFC] CMD 0x02 payload too short\n");
-			return false;
+		wstatus = app_auth_check_write("NFC");
+		if (wstatus == APP_CONFIG_STATUS_OK) {
+			if (payload_len < 3) {
+				printk("[NFC] CMD 0x02 payload too short\n");
+				wstatus = APP_CONFIG_STATUS_PARAM_LEN;
+			} else {
+				wstatus = apply_write_config(&payload[1],
+							     payload_len - 1, "NFC");
+			}
 		}
-		/* payload[0]=CMD, payload[1]=param_id, payload[2..]=value */
-		wstatus = apply_write_config(&payload[1], payload_len - 1, "NFC");
 	}
 
 	/* 构建应答payload */
@@ -470,7 +517,8 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 	uint8_t *raw_msg = nfc_t4t_ndef_file_msg_get(ndef_msg_buf);
 	uint32_t raw_msg_size = nfc_t4t_ndef_file_msg_size_get(ndef_msg_buf_size);
 
-	int err = ndef_encode_info_response(resp, raw_msg, &raw_msg_size);
+	int err = ndef_encode_response(resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE,
+				       raw_msg, &raw_msg_size);
 	if (err) {
 		printk("[NFC] encode error %d\n", err);
 		return false;
@@ -499,13 +547,29 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 
 	uint8_t cmd = data[0];
 
+	/* ── CMD 0x03: 认证与密码管理 ── */
+	if (cmd == APP_CONFIG_CMD_AUTH) {
+		uint16_t auth_len = app_auth_handle_cmd(data, len, resp, "BLE");
+		if (auth_len > 0) {
+			print_frame("BLE", "TX resp", resp, auth_len);
+		}
+		return auth_len;
+	}
+
 	/* OTA 数据包不打印帧（频繁，会刷屏） */
 	if (cmd != APP_CONFIG_CMD_OTA_DATA) {
 		print_frame("BLE", "RX cmd", data, len);
 	}
 
-	/* ── OTA 命令处理 ── */
+	/* ── OTA 命令处理（需认证） ── */
 	if (cmd == APP_CONFIG_CMD_OTA_START) {
+		uint8_t auth_st = app_auth_check_write("BLE");
+		if (auth_st != APP_CONFIG_STATUS_OK) {
+			resp[0] = APP_CONFIG_CMD_OTA_START;
+			resp[1] = auth_st;
+			print_frame("BLE", "TX resp", resp, 2);
+			return 2;
+		}
 		memset(&g_ota, 0, offsetof(struct ota_state, buf));
 		if (len >= 5) {
 			g_ota.total_size = ((uint32_t)data[1] << 24) |
@@ -522,6 +586,22 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 	}
 
 	if (cmd == APP_CONFIG_CMD_OTA_DATA) {
+		/* OTA_DATA 也需认证保护：未认证或 OTA 未开始则拒绝写入 */
+		uint8_t auth_st = app_auth_check_write("BLE");
+		if (auth_st != APP_CONFIG_STATUS_OK) {
+			resp[0] = APP_CONFIG_CMD_OTA_DATA;
+			resp[1] = auth_st;
+			print_frame("BLE", "TX resp", resp, 2);
+			return 2;
+		}
+		if (!g_ota.active) {
+			resp[0] = APP_CONFIG_CMD_OTA_DATA;
+			resp[1] = APP_CONFIG_STATUS_OTA_STATE;
+			printk("[BLE] OTA data without start\n");
+			print_frame("BLE", "TX resp", resp, 2);
+			return 2;
+		}
+
 		if (len >= 4) {
 			uint16_t idx      = ((uint16_t)data[1] << 8) | data[2];
 			uint16_t data_len = len - 3;
@@ -539,6 +619,13 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 	}
 
 	if (cmd == APP_CONFIG_CMD_OTA_END) {
+		uint8_t auth_st = app_auth_check_write("BLE");
+		if (auth_st != APP_CONFIG_STATUS_OK) {
+			resp[0] = APP_CONFIG_CMD_OTA_END;
+			resp[1] = auth_st;
+			print_frame("BLE", "TX resp", resp, 2);
+			return 2;
+		}
 		g_ota.active = false;
 		g_ota.done   = true;
 		printk("[BLE] OTA end: %u bytes in %u packets\n",
@@ -549,7 +636,7 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 		return 2;
 	}
 
-	/* ── 原有命令 0x01 / 0x02 ── */
+	/* ── CMD 0x01 / 0x02 ── */
 	uint8_t wstatus = APP_CONFIG_STATUS_OK;
 	if (cmd == APP_CONFIG_CMD_READ_INFO) {
 		if (len >= 5) {
@@ -561,15 +648,19 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 		printk("[BLE] config get\n");
 		print_config();
 	} else if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
-		if (len < 3) {
-			printk("[BLE] CMD 0x02 payload too short\n");
-			resp[0] = cmd;
-			resp[1] = APP_CONFIG_STATUS_BUSY;
-			memset(&resp[2], 0, APP_CONFIG_RESPONSE_PAYLOAD_SIZE - 2);
-			print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
-			return APP_CONFIG_RESPONSE_PAYLOAD_SIZE;
+		/* 先检查认证 */
+		wstatus = app_auth_check_write("BLE");
+		if (wstatus == APP_CONFIG_STATUS_OK) {
+			if (len < 3) {
+				printk("[BLE] CMD 0x02 payload too short\n");
+				resp[0] = cmd;
+				resp[1] = APP_CONFIG_STATUS_PARAM_LEN;
+				memset(&resp[2], 0, APP_CONFIG_RESPONSE_PAYLOAD_SIZE - 2);
+				print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
+				return APP_CONFIG_RESPONSE_PAYLOAD_SIZE;
+			}
+			wstatus = apply_write_config(&data[1], len - 1, "BLE");
 		}
-		wstatus = apply_write_config(&data[1], len - 1, "BLE");
 	}
 
 	response_build(cmd, resp);

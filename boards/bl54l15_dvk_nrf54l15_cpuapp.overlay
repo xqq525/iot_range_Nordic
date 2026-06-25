@@ -1,0 +1,11 @@
+/*
+ * DK/App integration overlay.
+ *
+ * Keep the nRF54L15 DK defaults for UART console, shell, LEDs and buttons,
+ * and only enable the NFCT peripheral required by the writable NDEF sample.
+ * The PCB-A pin-protection overlay belongs on the dedicated test branch.
+ */
+
+&nfct {
+	status = "okay";
+};

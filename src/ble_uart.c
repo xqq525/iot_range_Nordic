@@ -14,7 +14,9 @@
 
 #include <bluetooth/services/nus.h>
 
+#if defined(CONFIG_DK_LIBRARY)
 #include <dk_buttons_and_leds.h>
+#endif
 
 #include <zephyr/settings/settings.h>
 
@@ -25,14 +27,16 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 
 #include "ble_uart.h"
 #include "app_config.h"
+#include "app_auth.h"
 
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
 #define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
 
-#define BLE_CON_LED DK_LED3
-
-#define KEY_PASSKEY_ACCEPT DK_BTN1_MSK
-#define KEY_PASSKEY_REJECT DK_BTN2_MSK
+#if defined(CONFIG_DK_LIBRARY)
+#define BLE_CON_LED         DK_LED2
+#define KEY_PASSKEY_ACCEPT  DK_BTN1_MSK
+#define KEY_PASSKEY_REJECT  DK_BTN2_MSK
+#endif
 
 static struct bt_conn *current_conn;
 static struct bt_conn *auth_conn;
@@ -132,7 +136,9 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
 	current_conn = bt_conn_ref(conn);
 
+#if defined(CONFIG_DK_LIBRARY)
 	dk_set_led_on(BLE_CON_LED);
+#endif
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -151,12 +157,17 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	if (current_conn) {
 		bt_conn_unref(current_conn);
 		current_conn = NULL;
+#if defined(CONFIG_DK_LIBRARY)
 		dk_set_led_off(BLE_CON_LED);
+#endif
 	}
 
 	resp_conn = NULL;
 	resp_pending = false;
 	nus_tx_subscribed = false;
+
+	/* 清除 BLE 认证解锁状态 */
+	app_auth_ble_disconnect();
 }
 
 static void recycled_cb(void)
@@ -257,6 +268,7 @@ static struct bt_conn_auth_info_cb conn_auth_info_callbacks = {
 	.pairing_failed = pairing_failed
 };
 
+#if defined(CONFIG_DK_LIBRARY)
 static void num_comp_reply(bool accept)
 {
 	if (accept) {
@@ -285,6 +297,7 @@ static void button_changed(uint32_t button_state, uint32_t has_changed)
 		}
 	}
 }
+#endif /* CONFIG_DK_LIBRARY */
 #else
 static struct bt_conn_auth_cb conn_auth_callbacks;
 static struct bt_conn_auth_info_cb conn_auth_info_callbacks;
@@ -295,12 +308,12 @@ static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data,
 {
 	char addr[BT_ADDR_LE_STR_LEN] = {0};
 
-	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, ARRAY_SIZE(addr));
-	LOG_INF("Received from %s, len=%u, cmd=0x%02x", addr, len, data[0]);
-
 	if (len < 1) {
 		return;
 	}
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, ARRAY_SIZE(addr));
+	LOG_INF("Received from %s, len=%u, cmd=0x%02x", addr, len, data[0]);
 
 	uint16_t resp_len = app_config_handle_ble(data, len, resp_buf);
 	if (resp_len > 0) {
@@ -325,7 +338,7 @@ int ble_uart_init(void)
 {
 	int err;
 
-#if defined(CONFIG_BT_NUS_SECURITY_ENABLED)
+#if defined(CONFIG_BT_NUS_SECURITY_ENABLED) && defined(CONFIG_DK_LIBRARY)
 	err = dk_buttons_init(button_changed);
 	if (err) {
 		LOG_ERR("Cannot init buttons (err: %d)", err);

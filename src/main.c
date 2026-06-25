@@ -21,18 +21,23 @@
 #include <nfc/ndef/msg.h>
 #include <nfc/t4t/ndef_file.h>
 
+#if defined(CONFIG_DK_LIBRARY)
 #include <dk_buttons_and_leds.h>
+#endif
 
 #include "ndef_file_m.h"
 #include "app_config.h"
+#include "app_auth.h"
 #include "ble_uart.h"
 
 
+#if defined(CONFIG_DK_LIBRARY)
 #define NFC_FIELD_LED		DK_LED1
 #define NFC_WRITE_LED		DK_LED2
 #define NFC_READ_LED		DK_LED4
 
 #define NDEF_RESTORE_BTN_MSK	DK_BTN1_MSK
+#endif
 
 static uint8_t ndef_msg_buf[CONFIG_NDEF_FILE_SIZE]; /**< Buffer for NDEF file. */
 
@@ -77,22 +82,30 @@ static void nfc_callback(void *context,
 
 	switch (event) {
 	case NFC_T4T_EVENT_FIELD_ON:
+#if defined(CONFIG_DK_LIBRARY)
 		dk_set_led_on(NFC_FIELD_LED);
+#endif
 		break;
 
 	case NFC_T4T_EVENT_FIELD_OFF:
+#if defined(CONFIG_DK_LIBRARY)
 		dk_set_led_off(NFC_FIELD_LED);
 		dk_set_led_off(NFC_WRITE_LED);
 		dk_set_led_off(NFC_READ_LED);
+#endif
 		break;
 
 	case NFC_T4T_EVENT_NDEF_READ:
+#if defined(CONFIG_DK_LIBRARY)
 		dk_set_led_on(NFC_READ_LED);
+#endif
 		break;
 
 	case NFC_T4T_EVENT_NDEF_UPDATED:
 		if (data_length > 0) {
+#if defined(CONFIG_DK_LIBRARY)
 			dk_set_led_on(NFC_WRITE_LED);
+#endif
 
 			if (!app_config_handle_ndef(ndef_msg_buf, sizeof(ndef_msg_buf))) {
 				flash_buffer_prepare(data_length);
@@ -107,14 +120,15 @@ static void nfc_callback(void *context,
 
 static int board_init(void)
 {
-	int err;
-
-	err = dk_leds_init();
+#if defined(CONFIG_DK_LIBRARY)
+	int err = dk_leds_init();
 	if (err) {
 		printk("Cannot init LEDs (err: %d)\n", err);
+		return err;
 	}
+#endif
 
-	return err;
+	return 0;
 }
 
 /**
@@ -138,6 +152,7 @@ int main(void)
 		goto fail;
 	}
 
+#if defined(CONFIG_DK_LIBRARY)
 	/* Restore default NDEF message if button is pressed. */
 	uint32_t button_state;
 
@@ -150,6 +165,7 @@ int main(void)
 		}
 		printk("Default NDEF message restored!\n");
 	}
+#endif
 	/* Set up NFC */
 	int err = nfc_t4t_setup(nfc_callback, NULL);
 
@@ -169,6 +185,9 @@ int main(void)
 		goto fail;
 	}
 	printk("Starting NFC Writable NDEF Message sample\n");
+
+	/* Initialize authentication module */
+	app_auth_init();
 
 	/* Initialize BLE UART service */
 	err = ble_uart_init();
