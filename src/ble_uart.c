@@ -56,7 +56,7 @@ static bool nus_tx_subscribed;
 static bool resp_pending;
 static uint16_t resp_len_pending;
 static struct bt_conn *resp_conn;
-static uint8_t resp_buf[APP_CONFIG_RESPONSE_PAYLOAD_SIZE];
+static uint8_t resp_buf[APP_PROTO_RESP_MAX];
 
 static void send_retry_handler(struct k_work *work);
 
@@ -75,8 +75,8 @@ static void send_pending_resp(void)
 	if (err) {
 		retry_cnt++;
 		if (retry_cnt >= RESP_RETRY_MAX) {
-			LOG_ERR("BLE response failed after %d retries: ATT MTU too small (need ≥66). "
-				"APP must request MTU > 66 after connection.", retry_cnt);
+			LOG_ERR("BLE response failed after %d retries, resp_len=%u. "
+				"Check MTU/notification subscription.", retry_cnt, resp_len_pending);
 			resp_pending = false;
 			retry_cnt = 0;
 		} else {

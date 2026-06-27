@@ -7,52 +7,131 @@
 #include <zephyr/shell/shell.h>
 #include <stdlib.h>
 #include "app_config.h"
+#include "app_tlv.h"
+#include "app_protocol.h"
 
-/* config get */
+/* ── TLV 解析辅助：从响应中按 FIELD_ID 查找字段值 ── */
+static const uint8_t *tlv_find_field(const uint8_t *resp, uint16_t resp_len,
+				     uint8_t target_fid, uint8_t *out_len)
+{
+	/* 响应格式: [CMD(1), STATUS(1), COUNT(1), TLV...] */
+	if (resp_len < 3) return NULL;
+
+	uint8_t count = resp[2];
+	uint16_t off = 3;
+
+	for (uint8_t i = 0; i < count; i++) {
+		uint8_t fid, vlen;
+		const uint8_t *val;
+		if (tlv_decode_field(resp, resp_len, &off, &fid, &vlen, &val) != 0) {
+			return NULL;
+		}
+		if (fid == target_fid) {
+			*out_len = vlen;
+			return val;
+		}
+	}
+	return NULL;
+}
+
+static int16_t tlv_get_s16(const uint8_t *val)
+{
+	return (int16_t)(((uint16_t)val[0] << 8) | val[1]);
+}
+
+static uint16_t tlv_get_u16(const uint8_t *val)
+{
+	return ((uint16_t)val[0] << 8) | val[1];
+}
+
+static int32_t tlv_get_s32(const uint8_t *val)
+{
+	return ((int32_t)val[0] << 24) | ((int32_t)val[1] << 16) |
+	       ((int32_t)val[2] << 8)  |  (int32_t)val[3];
+}
+
+/* config get — V2.0 TLV 解析 */
 static int cmd_config_get(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-	uint8_t req = APP_CONFIG_CMD_READ_INFO;
-	uint8_t resp[APP_CONFIG_RESPONSE_PAYLOAD_SIZE];
+	/* 构造 CMD 0x01 读全部: [CMD=0x01, TS(4)=0, COUNT(1)=0] */
+	uint8_t req[6];
+	req[0] = APP_PROTO_CMD_READ;
+	req[1] = 0; req[2] = 0; req[3] = 0; req[4] = 0; /* unixtime 占位 */
+	req[5] = 0; /* count=0 读全部 */
 
-	app_config_handle_ble(&req, 1, resp);
+	uint8_t resp[APP_PROTO_RESP_MAX];
+	uint16_t resp_len = app_config_handle_ble(req, sizeof(req), resp);
 
-	if (resp[1] != APP_CONFIG_STATUS_OK) {
+	if (resp_len < 3) {
+		shell_error(sh, "no/invalid response (len=%u)", resp_len);
+		return -EIO;
+	}
+	if (resp[1] != APP_PROTO_STATUS_OK) {
 		shell_error(sh, "error status 0x%02x", resp[1]);
 		return -EIO;
 	}
 
-	int16_t temp_raw = ((int16_t)resp[44] << 8) | resp[45];
-	uint16_t dist    = ((uint16_t)resp[46] << 8) | resp[47];
-	uint16_t intv    = ((uint16_t)resp[50] << 8) | resp[51];
+	uint8_t vlen;
+	const uint8_t *v;
 
-	shell_print(sh, "model       : %s",    (char *)&resp[5]);
-	shell_print(sh, "sn          : %s",    (char *)&resp[21]);
-	shell_print(sh, "fw          : %d.%d.%d", resp[37], resp[38], resp[39]);
-	shell_print(sh, "hw          : %d.%d.%d", resp[40], resp[41], resp[42]);
-	shell_print(sh, "battery     : %d%%",  resp[43]);
-	shell_print(sh, "temperature : %d.%d C", temp_raw / 10, abs(temp_raw % 10));
-	shell_print(sh, "distance    : %d cm", dist);
-	shell_print(sh, "position    : 0x%02x", resp[48]);
-	shell_print(sh, "mode        : 0x%02x", resp[49]);
-	shell_print(sh, "interval    : %d min", intv);
+	/* 字符串字段 */
+	v = tlv_find_field(resp, resp_len, FIELD_MODEL, &vlen);
+	if (v) shell_print(sh, "model       : %.*s", vlen, v);
 
-	if (resp[52]) {
-		int32_t lat = ((int32_t)resp[53] << 24) |
-			      ((int32_t)resp[54] << 16) |
-			      ((int32_t)resp[55] << 8)  |
-			      (int32_t)resp[56];
-		int32_t lng = ((int32_t)resp[57] << 24) |
-			      ((int32_t)resp[58] << 16) |
-			      ((int32_t)resp[59] << 8)  |
-			      (int32_t)resp[60];
-		int16_t alt = ((int16_t)resp[61] << 8) | resp[62];
-		shell_print(sh, "gnss_fix    : %d",     resp[52]);
-		shell_print(sh, "latitude    : %d (x1e7)", lat);
-		shell_print(sh, "longitude   : %d (x1e7)", lng);
-		shell_print(sh, "altitude    : %d m",      alt);
+	v = tlv_find_field(resp, resp_len, FIELD_SN, &vlen);
+	if (v) shell_print(sh, "sn          : %.*s", vlen, v);
+
+	/* 版本字段 */
+	v = tlv_find_field(resp, resp_len, FIELD_FW_VER, &vlen);
+	if (v && vlen >= 3) shell_print(sh, "fw          : %d.%d.%d", v[0], v[1], v[2]);
+
+	v = tlv_find_field(resp, resp_len, FIELD_HW_VER, &vlen);
+	if (v && vlen >= 3) shell_print(sh, "hw          : %d.%d.%d", v[0], v[1], v[2]);
+
+	/* 状态字段 */
+	v = tlv_find_field(resp, resp_len, FIELD_DEVICE_STATE, &vlen);
+	if (v) shell_print(sh, "state       : 0x%02x", v[0]);
+
+	v = tlv_find_field(resp, resp_len, FIELD_BATTERY, &vlen);
+	if (v) shell_print(sh, "battery     : %d%%", v[0]);
+
+	v = tlv_find_field(resp, resp_len, FIELD_TEMPERATURE, &vlen);
+	if (v) {
+		int16_t t = tlv_get_s16(v);
+		shell_print(sh, "temperature : %d.%d C", t / 10, abs(t % 10));
+	}
+
+	v = tlv_find_field(resp, resp_len, FIELD_DISTANCE, &vlen);
+	if (v) shell_print(sh, "distance    : %d cm", tlv_get_u16(v));
+
+	v = tlv_find_field(resp, resp_len, FIELD_POSITION, &vlen);
+	if (v) shell_print(sh, "position    : 0x%02x", v[0]);
+
+	v = tlv_find_field(resp, resp_len, FIELD_MODE, &vlen);
+	if (v) shell_print(sh, "mode        : 0x%02x", v[0]);
+
+	v = tlv_find_field(resp, resp_len, FIELD_UPDATE_INTERVAL, &vlen);
+	if (v) shell_print(sh, "interval    : %d min", tlv_get_u16(v));
+
+	v = tlv_find_field(resp, resp_len, FIELD_PROTOCOL_VERSION, &vlen);
+	if (v) shell_print(sh, "protocol    : 0x%02x", v[0]);
+
+	/* GNSS 字段 */
+	v = tlv_find_field(resp, resp_len, FIELD_GNSS_FIX, &vlen);
+	if (v && v[0]) {
+		shell_print(sh, "gnss_fix    : %d", v[0]);
+
+		v = tlv_find_field(resp, resp_len, FIELD_LATITUDE, &vlen);
+		if (v) shell_print(sh, "latitude    : %d (x1e7)", tlv_get_s32(v));
+
+		v = tlv_find_field(resp, resp_len, FIELD_LONGITUDE, &vlen);
+		if (v) shell_print(sh, "longitude   : %d (x1e7)", tlv_get_s32(v));
+
+		v = tlv_find_field(resp, resp_len, FIELD_ALTITUDE, &vlen);
+		if (v) shell_print(sh, "altitude    : %d m", (int16_t)tlv_get_u16(v));
 	} else {
 		shell_print(sh, "gnss_fix    : 0 (no fix)");
 	}

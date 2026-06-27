@@ -5,6 +5,7 @@
  */
 
 #include "app_config.h"
+#include "app_fields.h"
 #include "app_auth.h"
 
 #include <zephyr/kernel.h>
@@ -12,46 +13,32 @@
 #include <nfc_t4t_lib.h>
 #include <nfc/t4t/ndef_file.h>
 
-/* ── 设备固定信息 ── */
+/* ── 字段数据已迁移至 app_fields.c，此处仅保留传输层逻辑 ── */
 
-static const char g_model[] = "ULP_RS100";
-static const char g_sn[]   = "123456";
+/* ── 传感器 setter 函数（转发到字段模块）── */
 
-static const uint8_t g_fw_ver[] = {1, 0, 0};
-static const uint8_t g_hw_ver[] = {1, 0, 0};
-
-/* ── 当前传感器数据（由外部更新） ── */
-
-static uint8_t  g_battery     = 100;
-static int16_t  g_temperature = 250;   /* 25.0°C, 单位0.1°C */
-static uint16_t g_distance    = 15;     /* cm, 0=无读数 */
-static uint8_t  g_position    = 0x00;  /* 0=正常, 1=倾斜 */
-static uint8_t  g_mode        = 0x02;  /* 1=快递箱, 2=垃圾桶 */
-static uint16_t g_update_time = 0;      /* 上报间隔，单位分钟 */
-
-/* ── GNSS 定位数据 ── */
-
-static uint8_t  g_gnss_fix    = 0x01;
-static int32_t  g_latitude    = 246087800;   /* 24.60878°N × 10^7 */
-static int32_t  g_longitude   = 1180689300;  /* 118.06893°E × 10^7 */
-static int16_t  g_altitude    = 15;           /* 15m */
-
-/* ── 供外部模块更新传感器值 ── */
-
-void app_config_set_battery(uint8_t level)     { g_battery = level; }
-void app_config_set_temperature(int16_t temp)   { g_temperature = temp; }
-void app_config_set_distance(uint16_t dist)     { g_distance = dist; }
-void app_config_set_position(uint8_t pos)       { g_position = pos; }
-void app_config_set_mode(uint8_t mode)          { g_mode = mode; }
-void app_config_set_update_time(uint16_t interval) { g_update_time = interval; }
-void app_config_set_gnss_fix(uint8_t fix)       { g_gnss_fix = fix; }
-void app_config_set_latitude(int32_t lat)       { g_latitude = lat; }
-void app_config_set_longitude(int32_t lng)      { g_longitude = lng; }
-void app_config_set_altitude(int16_t alt)       { g_altitude = alt; }
+void app_config_set_battery(uint8_t level)     { app_field_set_battery(level); }
+void app_config_set_temperature(int16_t temp)   { app_field_set_temperature(temp); }
+void app_config_set_distance(uint16_t dist)     { app_field_set_distance(dist); }
+void app_config_set_position(uint8_t pos)       { app_field_set_position(pos); }
+void app_config_set_mode(uint8_t mode)          { app_field_set(FIELD_MODE, &mode, 1); }
+void app_config_set_update_time(uint16_t interval) {
+	uint8_t buf[2];
+	buf[0] = (uint8_t)(interval >> 8);
+	buf[1] = (uint8_t)(interval);
+	app_field_set(FIELD_UPDATE_INTERVAL, buf, 2);
+}
+void app_config_set_gnss_fix(uint8_t fix)       { app_field_set_gnss_fix(fix); }
+void app_config_set_latitude(int32_t lat)       { app_field_set_latitude(lat); }
+void app_config_set_longitude(int32_t lng)      { app_field_set_longitude(lng); }
+void app_config_set_altitude(int16_t alt)       { app_field_set_altitude(alt); }
 
 /* ── 全局时间戳 ── */
 
-static uint32_t g_unixtime;  /* APP 最后一次 CMD 0x01 携带的时间戳，秒级 */
+uint32_t app_config_get_unixtime(void)
+{
+	return app_field_get_unixtime();
+}
 
 /* ── 可读名称映射 ── */
 
@@ -72,26 +59,6 @@ static const char *pos_name(uint8_t pos)
 	case 0x01: return "tilt";
 	default:   return "unknown";
 	}
-}
-
-/* ── 打印全部配置 ── */
-
-static void print_config(void)
-{
-	printk("  model       : %s\n", g_model);
-	printk("  sn          : %s\n", g_sn);
-	printk("  fw          : %d.%d.%d\n", g_fw_ver[0], g_fw_ver[1], g_fw_ver[2]);
-	printk("  hw          : %d.%d.%d\n", g_hw_ver[0], g_hw_ver[1], g_hw_ver[2]);
-	printk("  battery     : %u%%\n", g_battery);
-	printk("  temperature : %d.%d C\n", g_temperature / 10, (g_temperature % 10 + 10) % 10);
-	printk("  distance    : %u cm\n", g_distance);
-	printk("  position    : 0x%02x (%s)\n", g_position, pos_name(g_position));
-	printk("  mode        : 0x%02x (%s)\n", g_mode, mode_name(g_mode));
-	printk("  interval    : %u min\n", g_update_time);
-	printk("  gnss_fix    : %u\n", g_gnss_fix);
-	printk("  latitude    : %d (x1e7)\n", g_latitude);
-	printk("  longitude   : %d (x1e7)\n", g_longitude);
-	printk("  altitude    : %d m\n", g_altitude);
 }
 
 /* ── OTA 状态（调试阶段：数据存 RAM） ── */
@@ -121,8 +88,6 @@ const uint8_t *app_config_ota_get_buf(void)
 	return g_ota.buf;
 }
 
-uint32_t app_config_get_unixtime(void) { return g_unixtime; }
-
 /* ── NDEF记录标志 ── */
 
 #define NDEF_MB            0x80u
@@ -133,87 +98,19 @@ uint32_t app_config_get_unixtime(void) { return g_unixtime; }
 #define NDEF_TNF_MASK      0x07u
 #define NDEF_TNF_EXTERNAL  0x04u
 
-/* ── 应答Payload构建 ── */
+/* ── 帧打印 ── */
 
-static void response_build(uint8_t cmd, uint8_t *resp)
+static void print_frame(const char *channel, const char *dir,
+			const uint8_t *buf, size_t len)
 {
-	memset(resp, 0, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
-	resp[0] = cmd;
-
-	switch (cmd) {
-	case APP_CONFIG_CMD_READ_INFO:
-	case APP_CONFIG_CMD_WRITE_CONFIG: {
-		resp[1] = APP_CONFIG_STATUS_OK;
-
-		/* DATA_LEN: offset 2, uint16 BE — offset 4起共48字节 */
-		resp[2] = (uint8_t)((APP_CONFIG_RESPONSE_PAYLOAD_SIZE - 4) >> 8);
-		resp[3] = (uint8_t)(APP_CONFIG_RESPONSE_PAYLOAD_SIZE - 4);
-
-		/* DEVICE_TYPE: offset 4 */
-		resp[4] = APP_CONFIG_DEVICE_TYPE;
-
-		/* MODEL: offset 5, 16 bytes */
-		size_t ml = strlen(g_model) + 1;
-		if (ml > 16) ml = 16;
-		memcpy(&resp[5], g_model, ml);
-
-		/* SN: offset 21, 16 bytes */
-		size_t sl = strlen(g_sn) + 1;
-		if (sl > 16) sl = 16;
-		memcpy(&resp[21], g_sn, sl);
-
-		/* FW_VER: offset 37, 3 bytes */
-		memcpy(&resp[37], g_fw_ver, 3);
-
-		/* HW_VER: offset 40, 3 bytes */
-		memcpy(&resp[40], g_hw_ver, 3);
-
-		/* BATTERY: offset 43 */
-		resp[43] = g_battery;
-
-		/* TEMPERATURE: offset 44, int16 BE */
-		resp[44] = (uint8_t)(g_temperature >> 8);
-		resp[45] = (uint8_t)(g_temperature);
-
-		/* DISTANCE: offset 46, uint16 BE */
-		resp[46] = (uint8_t)(g_distance >> 8);
-		resp[47] = (uint8_t)(g_distance);
-
-		/* POSITION: offset 48 */
-		resp[48] = g_position;
-
-		/* MODE: offset 49 */
-		resp[49] = g_mode;
-
-		/* UPDATE_TIME: offset 50, uint16 BE */
-		resp[50] = (uint8_t)(g_update_time >> 8);
-		resp[51] = (uint8_t)(g_update_time);
-
-		/* GNSS_FIX: offset 52 */
-		resp[52] = g_gnss_fix;
-
-		/* LATITUDE: offset 53, int32 BE */
-		resp[53] = (uint8_t)(g_latitude >> 24);
-		resp[54] = (uint8_t)(g_latitude >> 16);
-		resp[55] = (uint8_t)(g_latitude >> 8);
-		resp[56] = (uint8_t)(g_latitude);
-
-		/* LONGITUDE: offset 57, int32 BE */
-		resp[57] = (uint8_t)(g_longitude >> 24);
-		resp[58] = (uint8_t)(g_longitude >> 16);
-		resp[59] = (uint8_t)(g_longitude >> 8);
-		resp[60] = (uint8_t)(g_longitude);
-
-		/* ALTITUDE: offset 61, int16 BE */
-		resp[61] = (uint8_t)(g_altitude >> 8);
-		resp[62] = (uint8_t)(g_altitude);
-
-		break;
+	printk("[%s] %s (%u bytes):", channel, dir, (unsigned)len);
+	for (size_t i = 0; i < len; i++) {
+		if (i % 16 == 0) {
+			printk("\n  %02x:", (unsigned)i);
+		}
+		printk(" %02x", buf[i]);
 	}
-	default:
-		resp[1] = APP_CONFIG_STATUS_UNSUPPORTED;
-		break;
-	}
+	printk("\n");
 }
 
 /* ── 手动NDEF记录解析 ── */
@@ -331,105 +228,6 @@ static int ndef_encode_response(const uint8_t *payload, uint32_t pay_len,
 	return 0;
 }
 
-/* ── 帧打印 ── */
-
-static void print_frame(const char *channel, const char *dir,
-			const uint8_t *buf, size_t len)
-{
-	printk("[%s] %s (%u bytes):", channel, dir, (unsigned)len);
-	for (size_t i = 0; i < len; i++) {
-		if (i % 16 == 0) {
-			printk("\n  %02x:", (unsigned)i);
-		}
-		printk(" %02x", buf[i]);
-	}
-	printk("\n");
-}
-
-/* ── 命令参数处理（NFC/BLE共用） ── */
-
-static uint8_t apply_write_config(const uint8_t *args, uint32_t args_len,
-				   const char *channel)
-{
-	if (args_len < 2) {
-		printk("[%s] CMD 0x02 payload too short\n", channel);
-		return APP_CONFIG_STATUS_PARAM_LEN;
-	}
-	uint8_t param_id = args[0];
-	switch (param_id) {
-	case APP_CONFIG_PARAM_MODE: {
-		if (args[1] < 0x01 || args[1] > 0x03) {
-			printk("[%s] invalid mode 0x%02x\n", channel, args[1]);
-			return APP_CONFIG_STATUS_PARAM_VALUE;
-		}
-		uint8_t old = g_mode;
-		g_mode = args[1];
-		printk("[%s] mode: %s (0x%02x) -> %s (0x%02x)\n",
-		       channel, mode_name(old), old, mode_name(g_mode), g_mode);
-		return APP_CONFIG_STATUS_OK;
-	}
-	case APP_CONFIG_PARAM_REPORT_INTERVAL:
-		if (args_len < 3) {
-			printk("[%s] interval payload too short\n", channel);
-			return APP_CONFIG_STATUS_PARAM_LEN;
-		}
-		{
-			uint16_t old = g_update_time;
-			g_update_time = ((uint16_t)args[1] << 8) | args[2];
-			printk("[%s] interval: %u min -> %u min\n",
-			       channel, old, g_update_time);
-		}
-		return APP_CONFIG_STATUS_OK;
-	case APP_CONFIG_PARAM_INSTALL_POS:
-		if (args_len < 9) {
-			printk("[%s] install_pos payload too short\n", channel);
-			return APP_CONFIG_STATUS_PARAM_LEN;
-		}
-		{
-			int32_t old_lat = g_latitude;
-			int32_t old_lng = g_longitude;
-			uint32_t lat_u = ((uint32_t)args[1] << 24) |
-					 ((uint32_t)args[2] << 16) |
-					 ((uint32_t)args[3] << 8)  |
-					 (uint32_t)args[4];
-			uint32_t lng_u = ((uint32_t)args[5] << 24) |
-					 ((uint32_t)args[6] << 16) |
-					 ((uint32_t)args[7] << 8)  |
-					 (uint32_t)args[8];
-			int32_t lat = (int32_t)lat_u;
-			int32_t lng = (int32_t)lng_u;
-			if (lat < -900000000 || lat > 900000000 ||
-			    lng < -1800000000 || lng > 1800000000) {
-				printk("[%s] invalid install_pos: lat=%d, lng=%d\n",
-				       channel, lat, lng);
-				return APP_CONFIG_STATUS_PARAM_VALUE;
-			}
-			g_latitude = lat;
-			g_longitude = lng;
-			g_gnss_fix = 1;
-			g_altitude = 0;
-			printk("[%s] install_pos: lat %d -> %d, lng %d -> %d\n",
-			       channel, old_lat, g_latitude, old_lng, g_longitude);
-		}
-		return APP_CONFIG_STATUS_OK;
-	case APP_CONFIG_PARAM_MODEL_CHECK: {
-		/* args[1..] 为 APP 下发的设备型号字符串（含 '\0'） */
-		uint32_t model_len = args_len - 1;
-		if (model_len > 16) model_len = 16;
-		if (model_len == strlen(g_model) + 1 &&
-		    memcmp(&args[1], g_model, model_len) == 0) {
-			printk("[%s] model check: match (%s)\n", channel, g_model);
-			return APP_CONFIG_STATUS_OK;
-		}
-		printk("[%s] model check: mismatch (expected %s)\n", channel, g_model);
-		return APP_CONFIG_STATUS_MODEL_MISMATCH;
-	}
-	default:
-		printk("[%s] unknown param_id 0x%02x\n", channel, param_id);
-		return APP_CONFIG_STATUS_UNSUPPORTED;
-	}
-}
-
 /* ── 公共接口 ── */
 
 bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
@@ -449,76 +247,22 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 
 	print_frame("NFC", "RX cmd", payload, payload_len);
 
-	/* ── CMD 0x03: 认证与密码管理 ── */
-	if (cmd == APP_CONFIG_CMD_AUTH) {
-		uint8_t auth_resp[64];
-		uint16_t auth_len = app_auth_handle_cmd(payload, payload_len,
-							auth_resp, "NFC");
-		if (auth_len == 0) {
-			return false;
-		}
-
-		print_frame("NFC", "TX resp", auth_resp, auth_len);
-
-		uint8_t *raw_msg = nfc_t4t_ndef_file_msg_get(ndef_msg_buf);
-		uint32_t raw_msg_size = nfc_t4t_ndef_file_msg_size_get(ndef_msg_buf_size);
-
-		int err = ndef_encode_response(auth_resp, auth_len,
-					       raw_msg, &raw_msg_size);
-		if (err) {
-			printk("[NFC] auth encode error %d\n", err);
-			return false;
-		}
-		err = nfc_t4t_ndef_file_encode(ndef_msg_buf, &raw_msg_size);
-		if (err) {
-			printk("[NFC] file encode error %d\n", err);
-			return false;
-		}
-		return true;
+	/* ── 统一协议处理 ── */
+	uint8_t resp[APP_PROTO_RESP_MAX];
+	uint16_t resp_len = process_app_payload("NFC", payload,
+						(uint16_t)payload_len,
+						resp, sizeof(resp));
+	if (resp_len == 0) {
+		return false;
 	}
 
-	/* CMD 0x01: 解析时间戳 + 打印全部配置 */
-	if (cmd == APP_CONFIG_CMD_READ_INFO) {
-		if (payload_len >= 5) {
-			g_unixtime = ((uint32_t)payload[1] << 24) |
-				     ((uint32_t)payload[2] << 16) |
-				     ((uint32_t)payload[3] << 8)  |
-				     (uint32_t)payload[4];
-		}
-		printk("[NFC] config get\n");
-		print_config();
-	}
-
-	/* 处理 CMD 0x02: 写入配置（需认证） */
-	uint8_t wstatus = APP_CONFIG_STATUS_OK;
-	if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
-		wstatus = app_auth_check_write("NFC");
-		if (wstatus == APP_CONFIG_STATUS_OK) {
-			if (payload_len < 3) {
-				printk("[NFC] CMD 0x02 payload too short\n");
-				wstatus = APP_CONFIG_STATUS_PARAM_LEN;
-			} else {
-				wstatus = apply_write_config(&payload[1],
-							     payload_len - 1, "NFC");
-			}
-		}
-	}
-
-	/* 构建应答payload */
-	uint8_t resp[APP_CONFIG_RESPONSE_PAYLOAD_SIZE];
-	response_build(cmd, resp);
-	if (wstatus != APP_CONFIG_STATUS_OK) {
-		resp[1] = wstatus;
-	}
-
-	print_frame("NFC", "TX resp", resp, sizeof(resp));
+	print_frame("NFC", "TX resp", resp, resp_len);
 
 	/* 编码应答NDEF消息 */
 	uint8_t *raw_msg = nfc_t4t_ndef_file_msg_get(ndef_msg_buf);
 	uint32_t raw_msg_size = nfc_t4t_ndef_file_msg_size_get(ndef_msg_buf_size);
 
-	int err = ndef_encode_response(resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE,
-				       raw_msg, &raw_msg_size);
+	int err = ndef_encode_response(resp, resp_len, raw_msg, &raw_msg_size);
 	if (err) {
 		printk("[NFC] encode error %d\n", err);
 		return false;
@@ -531,11 +275,6 @@ bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size)
 		return false;
 	}
 
-	/* 注意：不需要调用 nfc_t4t_ndef_rwpayload_set，
-	 * 因为 raw_msg 直接修改了已注册的 ndef_msg_buf 内容，
-	 * T4T库在下次READ时会自动读取更新后的缓冲区。
-	 */
-
 	return true;
 }
 
@@ -547,21 +286,13 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 
 	uint8_t cmd = data[0];
 
-	/* ── CMD 0x03: 认证与密码管理 ── */
-	if (cmd == APP_CONFIG_CMD_AUTH) {
-		uint16_t auth_len = app_auth_handle_cmd(data, len, resp, "BLE");
-		if (auth_len > 0) {
-			print_frame("BLE", "TX resp", resp, auth_len);
-		}
-		return auth_len;
-	}
+	/* ── OTA 命令：保留 BLE 专用逻辑，不进入 process_app_payload ── */
 
 	/* OTA 数据包不打印帧（频繁，会刷屏） */
 	if (cmd != APP_CONFIG_CMD_OTA_DATA) {
 		print_frame("BLE", "RX cmd", data, len);
 	}
 
-	/* ── OTA 命令处理（需认证） ── */
 	if (cmd == APP_CONFIG_CMD_OTA_START) {
 		uint8_t auth_st = app_auth_check_write("BLE");
 		if (auth_st != APP_CONFIG_STATUS_OK) {
@@ -586,7 +317,6 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 	}
 
 	if (cmd == APP_CONFIG_CMD_OTA_DATA) {
-		/* OTA_DATA 也需认证保护：未认证或 OTA 未开始则拒绝写入 */
 		uint8_t auth_st = app_auth_check_write("BLE");
 		if (auth_st != APP_CONFIG_STATUS_OK) {
 			resp[0] = APP_CONFIG_CMD_OTA_DATA;
@@ -636,37 +366,13 @@ uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp)
 		return 2;
 	}
 
-	/* ── CMD 0x01 / 0x02 ── */
-	uint8_t wstatus = APP_CONFIG_STATUS_OK;
-	if (cmd == APP_CONFIG_CMD_READ_INFO) {
-		if (len >= 5) {
-			g_unixtime = ((uint32_t)data[1] << 24) |
-				     ((uint32_t)data[2] << 16) |
-				     ((uint32_t)data[3] << 8)  |
-				     (uint32_t)data[4];
-		}
-		printk("[BLE] config get\n");
-		print_config();
-	} else if (cmd == APP_CONFIG_CMD_WRITE_CONFIG) {
-		/* 先检查认证 */
-		wstatus = app_auth_check_write("BLE");
-		if (wstatus == APP_CONFIG_STATUS_OK) {
-			if (len < 3) {
-				printk("[BLE] CMD 0x02 payload too short\n");
-				resp[0] = cmd;
-				resp[1] = APP_CONFIG_STATUS_PARAM_LEN;
-				memset(&resp[2], 0, APP_CONFIG_RESPONSE_PAYLOAD_SIZE - 2);
-				print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
-				return APP_CONFIG_RESPONSE_PAYLOAD_SIZE;
-			}
-			wstatus = apply_write_config(&data[1], len - 1, "BLE");
-		}
+	/* ── CMD 0x01 / 0x02 / 0x03 / 0x04 统一协议处理 ── */
+	uint8_t  internal_buf[APP_PROTO_RESP_MAX];
+	uint16_t resp_len = process_app_payload("BLE", data, len,
+						internal_buf, sizeof(internal_buf));
+	if (resp_len > 0) {
+		memcpy(resp, internal_buf, resp_len);
+		print_frame("BLE", "TX resp", resp, resp_len);
 	}
-
-	response_build(cmd, resp);
-	if (wstatus != APP_CONFIG_STATUS_OK) {
-		resp[1] = wstatus;
-	}
-	print_frame("BLE", "TX resp", resp, APP_CONFIG_RESPONSE_PAYLOAD_SIZE);
-	return APP_CONFIG_RESPONSE_PAYLOAD_SIZE;
+	return resp_len;
 }

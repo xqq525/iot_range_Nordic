@@ -53,6 +53,9 @@ uint8_t app_auth_check_write(const char *channel);
 /** BLE 断开连接时调用，清除 BLE 解锁状态 */
 void app_auth_ble_disconnect(void);
 
+/** 恢复出厂时调用，重置密码 hash 为默认值 "123456" */
+void app_auth_reset_password(void);
+
 #ifdef __cplusplus
 }
 #endif

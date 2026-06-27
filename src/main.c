@@ -27,6 +27,7 @@
 
 #include "ndef_file_m.h"
 #include "app_config.h"
+#include "app_fields.h"
 #include "app_auth.h"
 #include "ble_uart.h"
 
@@ -188,6 +189,8 @@ int main(void)
 
 	/* Initialize authentication module */
 	app_auth_init();
+	/* Initialize field registry (V2.0 protocol) */
+	app_fields_init();
 
 	/* Initialize BLE UART service */
 	err = ble_uart_init();

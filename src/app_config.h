@@ -15,51 +15,14 @@
 extern "C" {
 #endif
 
-/** 命令码 */
-#define APP_CONFIG_CMD_READ_INFO    0x01
-#define APP_CONFIG_CMD_WRITE_CONFIG 0x02
-#define APP_CONFIG_CMD_AUTH         0x03
-#define APP_CONFIG_CMD_OTA_START    0x10
-#define APP_CONFIG_CMD_OTA_DATA     0x11
-#define APP_CONFIG_CMD_OTA_END      0x12
+/* V2.0 协议常量（含向后兼容别名） */
+#include "app_protocol.h"
 
-/** CMD 0x02 参数子项 param_id */
-#define APP_CONFIG_PARAM_MODE            0x01
-#define APP_CONFIG_PARAM_REPORT_INTERVAL 0x02
-#define APP_CONFIG_PARAM_INSTALL_POS     0x03
-#define APP_CONFIG_PARAM_MODEL_CHECK     0x04
-
-/** CMD 0x03 认证子命令 subcmd */
-#define APP_CONFIG_AUTH_SUBCMD_NONCE      0x01
-#define APP_CONFIG_AUTH_SUBCMD_TOKEN      0x02
-#define APP_CONFIG_AUTH_SUBCMD_CHANGE_PWD 0x03
-#define APP_CONFIG_AUTH_SUBCMD_LOCK       0x04
-
-/** 认证状态 */
-#define APP_CONFIG_AUTH_STATE_LOCKED   0x00
-#define APP_CONFIG_AUTH_STATE_UNLOCKED 0x01
-
-/** 错误码 */
-#define APP_CONFIG_STATUS_OK            0x00
-#define APP_CONFIG_STATUS_UNSUPPORTED   0x01
-#define APP_CONFIG_STATUS_BUSY          0x02
-#define APP_CONFIG_STATUS_OTA_DATA_LEN  0x03
-#define APP_CONFIG_STATUS_OTA_IDX       0x04
-#define APP_CONFIG_STATUS_PARAM_LEN     0x05
-#define APP_CONFIG_STATUS_PARAM_VALUE   0x06
-#define APP_CONFIG_STATUS_MODEL_MISMATCH 0x07
-#define APP_CONFIG_STATUS_CHANNEL_UNSUPPORTED 0x08
-#define APP_CONFIG_STATUS_OTA_STATE     0x09
-#define APP_CONFIG_STATUS_AUTH_FAILED   0x0A
-#define APP_CONFIG_STATUS_AUTH_REQUIRED 0x0B
-#define APP_CONFIG_STATUS_AUTH_EXPIRED  0x0C
-#define APP_CONFIG_STATUS_AUTH_STATE    0x0D
-#define APP_CONFIG_STATUS_PASSWORD_FORMAT 0x0E
-#define APP_CONFIG_STATUS_UNKNOWN       0xFF
-
-/** 应答Payload定长 */
-#define APP_CONFIG_RESPONSE_PAYLOAD_SIZE 63
-#define APP_CONFIG_DEVICE_TYPE           0x01
+/** External Type 字符串 */
+#define APP_CONFIG_CMD_TYPE      "ulpinternal:cmd"
+#define APP_CONFIG_CMD_TYPE_LEN  15
+#define APP_CONFIG_INFO_TYPE     "ulpinternal:info"
+#define APP_CONFIG_INFO_TYPE_LEN 16
 
 /** OTA 调试缓冲区（RAM，32KB）*/
 #define APP_CONFIG_OTA_BUF_SIZE  (32 * 1024)
@@ -75,12 +38,6 @@ struct app_config_ota_info {
 
 void app_config_ota_get_info(struct app_config_ota_info *info);
 const uint8_t *app_config_ota_get_buf(void);
-
-/** External Type 字符串 */
-#define APP_CONFIG_CMD_TYPE      "ulpinternal:cmd"
-#define APP_CONFIG_CMD_TYPE_LEN  15
-#define APP_CONFIG_INFO_TYPE     "ulpinternal:info"
-#define APP_CONFIG_INFO_TYPE_LEN 16
 
 /* 传感器数据更新接口 */
 void app_config_set_battery(uint8_t level);
@@ -112,20 +69,14 @@ uint32_t app_config_get_unixtime(void);
 bool app_config_handle_ndef(uint8_t *ndef_msg_buf, size_t ndef_msg_buf_size);
 
 /**
- * @brief 处理BLE收到的裸命令，构建63字节应答payload。
+ * @brief 处理BLE收到的裸命令。
  *
  *        命令格式: [CMD, ...params]
- *          CMD 0x01: [0x01, TS_3, TS_2, TS_1, TS_0] 5字节
- *          CMD 0x02: [0x02, param_id, value...] 变长
- *            param_id 0x01: mode (1字节)
- *            param_id 0x02: interval (2字节 BE)
- *            param_id 0x03: install_pos LAT(4字节 BE) + LNG(4字节 BE)
- *
- *        应答格式: 63字节，与NFC应答payload完全相同。
+ *        应答写入 resp 缓冲区，返回实际字节数。
  *
  * @param data   BLE收到的原始bytes
  * @param len    数据长度
- * @param resp   输出缓冲区，须>=APP_CONFIG_RESPONSE_PAYLOAD_SIZE(63)字节
+ * @param resp   输出缓冲区，须>=APP_PROTO_RESP_MAX(256)字节
  * @return 实际应答字节数，0 表示无需回复（如 OTA 数据包）
  */
 uint16_t app_config_handle_ble(const uint8_t *data, uint16_t len, uint8_t *resp);

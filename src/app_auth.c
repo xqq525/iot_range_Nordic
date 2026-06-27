@@ -10,7 +10,7 @@
  *
  * 测试阶段默认密码: 123456
  * password_hash = SHA256(password + device_sn + salt)
- * salt = "ULP_RS100_AUTH_V1"
+ * salt = "RL_RANGE_AUTH_V1"
  * token = HMAC_SHA256(password_hash, nonce + device_sn)
  *
  * SHA256 与 HMAC-SHA256 为自包含实现，不依赖外部密码库。
@@ -35,7 +35,7 @@
 /* ── 设备身份 ── */
 
 static const char g_sn[]   = "123456";      /* 与 app_config.c 保持一致 */
-static const char g_salt[] = "ULP_RS100_AUTH_V1";
+static const char g_salt[] = "RL_RANGE_AUTH_V1";
 
 /* ── 默认测试密码 ── */
 
@@ -345,6 +345,12 @@ void app_auth_init(void)
 {
 	compute_password_hash(DEFAULT_PASSWORD, g_sn, g_salt, g_password_hash);
 	printk("[AUTH] init OK (default password, RAM-only, lost on reboot)\n");
+}
+
+void app_auth_reset_password(void)
+{
+	compute_password_hash(DEFAULT_PASSWORD, g_sn, g_salt, g_password_hash);
+	printk("[AUTH] password reset to default\n");
 }
 
 uint16_t app_auth_handle_cmd(const uint8_t *data, uint16_t len,
